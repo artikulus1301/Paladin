@@ -21,7 +21,7 @@ graph TB
     end
 
     subgraph "Layer 3 — SAP Core (Parsing & Correlation)"
-        COL --> MP[Morpho Parser (SpaCy)]
+        COL --> MP["Morpho Parser (SpaCy)"]
         MP --> GE[Graph Enricher]
         GE --> NEO[Neo4j]
         GE --> COR[Correlator]
