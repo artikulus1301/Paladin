@@ -1,0 +1,27 @@
+use_default_settings: true
+
+server:
+  secret_key: "change_this_to_a_random_string_32chars"
+  limiter: false
+  image_proxy: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "ru-RU"
+
+engines:
+  - name: google
+    engine: google
+    use_mobile_ui: false
+  - name: bing
+    engine: bing
+  - name: duckduckgo
+    engine: duckduckgo
+  - name: wikipedia
+    engine: wikipedia
+    language: ru
+
+outgoing:
+  request_timeout: 10.0
+  useragent_suffix: ""

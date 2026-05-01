@@ -1,0 +1,136 @@
+version: "3.9"
+
+services:
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: paladin_neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme123}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-changeme123}", "RETURN 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: paladin_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: paladin
+      POSTGRES_PASSWORD: paladin
+      POSTGRES_DB: paladin_archive
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paladin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: paladin_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: paladin_ollama_init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen3:8b\"}' &&
+        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"nomic-embed-text\"}' &&
+        echo 'Models pulled successfully'
+      "
+    restart: "no"
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: paladin_searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080
+    volumes:
+      - ./docker/searxng:/etc/searxng
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
+  paladin:
+    build:
+      context: .
+      dockerfile: Dockerfile.paladin
+    container_name: paladin_core
+    restart: unless-stopped
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
+    environment:
+      - PALADIN_MODE=dummy
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme123}
+      - POSTGRES_DSN=postgresql://paladin:paladin@postgres:5432/paladin_archive
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
+      - SEARXNG_URL=http://searxng:8080
+      - DASHBOARD_HOST=0.0.0.0
+      - DASHBOARD_PORT=8888
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SAP_SCORE_THRESHOLD=${SAP_SCORE_THRESHOLD:-0.7}
+      - DUMMY_EVENTS_PER_MIN=${DUMMY_EVENTS_PER_MIN:-10}
+      - DUMMY_ANOMALY_PROB=${DUMMY_ANOMALY_PROB:-0.05}
+    volumes:
+      - paladin_data:/app/data
+      - paladin_logs:/app/logs
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  postgres_data:
+  ollama_models:
+  paladin_data:
+  paladin_logs:

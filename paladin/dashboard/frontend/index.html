@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paladin — Security Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e1a;--surface:#111827;--card:#1a2236;--border:#2a3450;--accent:#6366f1;
+--accent2:#818cf8;--green:#10b981;--yellow:#f59e0b;--red:#ef4444;--crit:#dc2626;
+--text:#e5e7eb;--muted:#9ca3af;--font:'Inter',system-ui,sans-serif}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh}
+.header{background:linear-gradient(135deg,#111827 0%,#1e1b4b 100%);padding:16px 32px;
+display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}
+.logo{font-size:24px;font-weight:700;background:linear-gradient(135deg,var(--accent),#a78bfa);
+-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.logo span{font-size:12px;font-weight:400;color:var(--muted);-webkit-text-fill-color:var(--muted);margin-left:8px}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.status-dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+.status-dot.off{background:var(--red)}
+.tabs{display:flex;gap:4px;background:var(--surface);padding:8px 32px;border-bottom:1px solid var(--border)}
+.tab{padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;
+color:var(--muted);transition:all .2s}
+.tab:hover{color:var(--text);background:var(--card)}
+.tab.active{color:#fff;background:var(--accent)}
+.main{padding:24px 32px;max-width:1400px;margin:0 auto}
+.section{display:none}.section.active{display:block}
+.incident-card{background:var(--card);border:1px solid var(--border);border-radius:10px;
+padding:18px;margin-bottom:12px;transition:all .2s;position:relative;overflow:hidden}
+.incident-card:hover{border-color:var(--accent);transform:translateY(-1px);
+box-shadow:0 4px 20px rgba(99,102,241,.15)}
+.incident-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px}
+.incident-card.CRITICAL::before{background:var(--crit)}
+.incident-card.HIGH::before{background:var(--red)}
+.incident-card.MEDIUM::before{background:var(--yellow)}
+.incident-card.LOW::before{background:var(--green)}
+.sev-badge{font-size:11px;font-weight:600;padding:3px 8px;border-radius:4px;text-transform:uppercase}
+.sev-badge.CRITICAL{background:rgba(220,38,38,.2);color:#fca5a5}
+.sev-badge.HIGH{background:rgba(239,68,68,.2);color:#fca5a5}
+.sev-badge.MEDIUM{background:rgba(245,158,11,.2);color:#fcd34d}
+.sev-badge.LOW{background:rgba(16,185,129,.2);color:#6ee7b7}
+.inc-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.inc-title{font-weight:600;font-size:15px}
+.inc-meta{font-size:12px;color:var(--muted);margin-bottom:8px;font-family:'JetBrains Mono',monospace}
+.inc-summary{font-size:13px;line-height:1.5;color:var(--muted);margin-bottom:12px;
+max-height:80px;overflow:hidden;text-overflow:ellipsis}
+.inc-actions{display:flex;gap:8px}
+.btn{padding:6px 14px;border-radius:6px;border:none;font-size:12px;font-weight:500;
+cursor:pointer;transition:all .2s;font-family:var(--font)}
+.btn-approve{background:var(--green);color:#fff}.btn-approve:hover{background:#059669}
+.btn-reject{background:var(--red);color:#fff}.btn-reject:hover{background:#dc2626}
+.btn-detail{background:var(--border);color:var(--text)}.btn-detail:hover{background:var(--accent)}
+.btn-scenario{background:var(--accent);color:#fff;padding:8px 18px;font-size:13px}
+.btn-scenario:hover{background:var(--accent2)}
+.log-table{width:100%;border-collapse:collapse;font-size:13px}
+.log-table th{text-align:left;padding:10px 12px;background:var(--card);color:var(--muted);
+font-weight:500;border-bottom:1px solid var(--border);position:sticky;top:0}
+.log-table td{padding:8px 12px;border-bottom:1px solid var(--border)}
+.log-table tr:hover{background:rgba(99,102,241,.05)}
+.graph-container{background:var(--card);border:1px solid var(--border);border-radius:10px;
+height:500px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.scenario-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;
+padding:18px;margin-bottom:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.scenario-panel select,.scenario-panel input{background:var(--surface);border:1px solid var(--border);
+color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;font-family:var(--font)}
+.empty{text-align:center;padding:60px;color:var(--muted);font-size:14px}
+.toast{position:fixed;top:20px;right:20px;background:var(--accent);color:#fff;padding:12px 20px;
+border-radius:8px;font-size:13px;z-index:999;animation:slideIn .3s ease;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;
+align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;
+width:90%;max-width:500px}
+.modal h3{margin-bottom:16px}
+.modal textarea{width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);
+padding:10px;border-radius:6px;min-height:80px;font-family:var(--font);font-size:13px;margin-bottom:12px}
+.modal .btn{margin-right:8px}
+.count-badge{background:var(--accent);color:#fff;font-size:11px;padding:2px 7px;border-radius:10px;margin-left:6px}
+.auto-badge{font-size:10px;font-weight:600;padding:3px 8px;border-radius:4px;background:rgba(245,158,11,.2);color:#fbbf24;margin-left:8px}
+.auto-badge.executed{background:rgba(239,68,68,.2);color:#fca5a5;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.countdown{font-size:11px;color:var(--yellow);font-family:'JetBrains Mono',monospace;margin-left:8px}
+.toast.auto{background:#dc2626}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">⛨ PALADIN <span>Autonomous Security System v0.1</span></div>
+  <div style="display:flex;align-items:center;gap:16px;">
+      <div style="background:var(--surface);padding:4px;border-radius:6px;display:flex;border:1px solid var(--border);">
+         <button id="btnModeAuto" onclick="setMode('autonomous')" class="btn" style="background:var(--accent);color:white;border-radius:4px;padding:4px 12px;font-size:11px;">Autonomous</button>
+         <button id="btnModeHuman" onclick="setMode('human_in_loop')" class="btn" style="background:transparent;color:var(--muted);border-radius:4px;padding:4px 12px;font-size:11px;">Human-in-Loop</button>
+      </div>
+      <div id="statusBar"><span class="status-dot off" id="neo4jDot"></span>Neo4j <span style="margin:0 12px;color:var(--border)">|</span>
+      <span class="status-dot off" id="wsDot"></span>WebSocket</div>
+  </div>
+</div>
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('incidents')">🔔 Incidents<span class="count-badge" id="incCount">0</span></div>
+  <div class="tab" onclick="switchTab('actions')">📋 Action Log</div>
+  <div class="tab" onclick="switchTab('graph')">🕸 Graph</div>
+  <div class="tab" onclick="switchTab('scenarios')">🧪 Scenarios</div>
+</div>
+<div class="main">
+  <!-- Incidents -->
+  <div class="section active" id="sec-incidents">
+    <div id="incidentList"><div class="empty">Connecting...</div></div>
+  </div>
+  <!-- Action Log -->
+  <div class="section" id="sec-actions">
+    <table class="log-table"><thead><tr>
+      <th>Time</th><th>Incident</th><th>Severity</th><th>Action</th><th>Status</th><th>Note</th>
+    </tr></thead><tbody id="actionBody"></tbody></table>
+  </div>
+  <!-- Graph -->
+  <div class="section" id="sec-graph">
+    <div style="margin-bottom:12px">
+      <input id="graphIncId" placeholder="Incident ID (e.g. INC-...)" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;width:300px;font-size:13px">
+      <button class="btn btn-detail" onclick="loadGraph()">Load Graph</button>
+    </div>
+    <div class="graph-container" id="graphView">Enter an Incident ID to visualize its subgraph</div>
+  </div>
+  <!-- Scenarios -->
+  <div class="section" id="sec-scenarios">
+    <h3 style="margin-bottom:16px">🧪 Trigger Test Scenarios</h3>
+    <div class="scenario-panel">
+      <select id="scenSource"><option value="logs">Logs</option><option value="emails">Emails</option>
+      <option value="messages">Chat</option><option value="calls">Calls</option></select>
+      <select id="scenName">
+        <option value="brute_force">Brute Force</option><option value="data_exfiltration">Data Exfiltration</option>
+        <option value="insider_threat">Insider Threat</option><option value="privilege_escalation">Privilege Escalation</option>
+        <option value="phishing">Phishing</option><option value="data_leak_email">Data Leak (Email)</option>
+        <option value="social_engineering">Social Engineering</option>
+        <option value="insider_chat">Insider Chat</option><option value="credential_sharing">Credential Sharing</option>
+        <option value="data_theft_call">Data Theft Call</option>
+      </select>
+      <input id="scenActor" placeholder="Actor UID (optional)">
+      <button class="btn btn-scenario" onclick="triggerScenario()">▶ Run Scenario</button>
+    </div>
+    <div id="scenLog" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);padding:12px"></div>
+  </div>
+</div>
+<!-- Modal -->
+<div class="modal-overlay" id="modal"><div class="modal">
+  <h3 id="modalTitle">Confirm Action</h3>
+  <p id="modalDesc" style="font-size:13px;color:var(--muted);margin-bottom:12px"></p>
+  <textarea id="modalReason" placeholder="Reason (required)"></textarea>
+  <button class="btn btn-approve" id="modalConfirm">Confirm</button>
+  <button class="btn btn-detail" onclick="closeModal()">Cancel</button>
+</div></div>
+
+<script>
+const API = window.location.origin;
+let ws = null;
+
+async function setMode(mode) {
+  try {
+    const r = await fetch(API+'/api/config/mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('btnModeAuto').style.background = mode === 'autonomous' ? 'var(--accent)' : 'transparent';
+      document.getElementById('btnModeAuto').style.color = mode === 'autonomous' ? 'white' : 'var(--muted)';
+      document.getElementById('btnModeHuman').style.background = mode === 'human_in_loop' ? 'var(--accent)' : 'transparent';
+      document.getElementById('btnModeHuman').style.color = mode === 'human_in_loop' ? 'white' : 'var(--muted)';
+      toast('Switched to ' + (mode === 'autonomous' ? 'Autonomous Mode (Instant)' : 'Human-in-the-Loop Mode (60s)'));
+    }
+  } catch (e) {
+    toast('Failed to change mode');
+  }
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', t.textContent.toLowerCase().includes(name.slice(0,4))));
+  document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-'+name));
+  if (name === 'actions') loadActions();
+}
+
+// ── Fetch incidents ─────────────────────────────────────────────────
+async function loadIncidents() {
+  try {
+    const r = await fetch(API+'/api/incidents');
+    const d = await r.json();
+    document.getElementById('incCount').textContent = d.count;
+    const el = document.getElementById('incidentList');
+    if (!d.incidents.length) { el.innerHTML = '<div class="empty">No open incidents</div>'; return; }
+    el.innerHTML = d.incidents.map(i => {
+      const isAutoExec = (i.action_status||'').includes('auto_executed_timeout');
+      const isPending = i.action_status==='pending' && ['FLAG','ISOLATE','BLOCK'].includes(i.action_proposed);
+      let statusBadge = '';
+      if (isAutoExec) statusBadge = '<span class="auto-badge executed">⚡ AUTO-EXECUTED</span>';
+      else if (isPending) statusBadge = `<span class="auto-badge">⏳ Awaiting operator (auto in <span class="countdown" data-updated="${i.created_at}"></span>)</span>`;
+      else if (i.action_status==='auto_executed') statusBadge = '<span class="auto-badge">🤖 Auto (no confirmation needed)</span>';
+      return `
+      <div class="incident-card ${i.severity}" ${isAutoExec?'style="border-color:#f59e0b"':''}>
+        <div class="inc-header">
+          <span class="inc-title">${esc(i.title)}${statusBadge}</span>
+          <span class="sev-badge ${i.severity}">${i.severity}</span>
+        </div>
+        <div class="inc-meta">${esc(i.incident_id)} · Score: ${i.score} · ${fmtTime(i.created_at)} · Involved: ${(i.involved||[]).join(', ')||'—'}</div>
+        <div class="inc-summary">${esc(i.llm_summary||'Awaiting LLM analysis...')}</div>
+        <div class="inc-actions">
+          ${isPending?
+            `<button class="btn btn-approve" onclick="openModal('${i.incident_id}','approve')">✓ Approve</button>
+             <button class="btn btn-reject" onclick="openModal('${i.incident_id}','reject')">✗ Reject</button>`:''}
+          <button class="btn btn-detail" onclick="document.getElementById('graphIncId').value='${i.incident_id}';switchTab('graph');loadGraph()">View Graph</button>
+        </div>
+      </div>`}).join('');
+  } catch(e) { document.getElementById('incidentList').innerHTML = '<div class="empty">Error loading incidents</div>'; }
+}
+
+// ── Actions log ─────────────────────────────────────────────────────
+async function loadActions() {
+  try {
+    const r = await fetch(API+'/api/actions');
+    const d = await r.json();
+    document.getElementById('actionBody').innerHTML = d.actions.map(a => `<tr>
+      <td>${fmtTime(a.timestamp)}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(a.incident_id)}</td>
+      <td><span class="sev-badge ${a.severity}">${a.severity}</span></td>
+      <td>${esc(a.action||'—')}</td><td>${esc(a.status||'—')}</td><td>${esc(a.note||'')}</td>
+    </tr>`).join('');
+  } catch(e) {}
+}
+
+// ── Graph ────────────────────────────────────────────────────────────
+async function loadGraph() {
+  const id = document.getElementById('graphIncId').value.trim();
+  if (!id) return;
+  const el = document.getElementById('graphView');
+  try {
+    const r = await fetch(API+'/api/graph/'+id);
+    const d = await r.json();
+    const nodes = d.nodes||[];
+    if (!nodes.length) { el.innerHTML='<div class="empty">No graph data</div>'; return; }
+    // Simple SVG visualization
+    const w=el.clientWidth, h=el.clientHeight||500;
+    let svg = `<svg width="${w}" height="${h}" style="background:transparent">`;
+    nodes.forEach((n,i) => {
+      const x=100+(i%6)*180, y=80+Math.floor(i/6)*100;
+      const col = n.label==='Incident'?'#ef4444':n.label==='Employee'?'#6366f1':'#10b981';
+      const name = n.props?.full_name||n.props?.incident_id||n.props?.event_type||n.props?.hostname||n.label;
+      svg += `<circle cx="${x}" cy="${y}" r="24" fill="${col}" opacity="0.8"/>`;
+      svg += `<text x="${x}" y="${y+4}" text-anchor="middle" fill="white" font-size="10" font-family="Inter">${esc(String(name).slice(0,15))}</text>`;
+      svg += `<text x="${x}" y="${y+38}" text-anchor="middle" fill="#9ca3af" font-size="9">${n.label}</text>`;
+    });
+    svg += '</svg>';
+    el.innerHTML = svg;
+  } catch(e) { el.innerHTML = '<div class="empty">Error loading graph</div>'; }
+}
+
+// ── Scenarios ────────────────────────────────────────────────────────
+async function triggerScenario() {
+  const body = { source: document.getElementById('scenSource').value,
+    scenario: document.getElementById('scenName').value,
+    actor_uid: document.getElementById('scenActor').value || null };
+  const lg = document.getElementById('scenLog');
+  lg.innerHTML += `<div>[${new Date().toLocaleTimeString()}] Triggering ${body.scenario} on ${body.source}...</div>`;
+  try {
+    const r = await fetch(API+'/api/scenario', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d = await r.json();
+    lg.innerHTML += `<div style="color:var(--green)">[${new Date().toLocaleTimeString()}] ✓ ${JSON.stringify(d)}</div>`;
+  } catch(e) { lg.innerHTML += `<div style="color:var(--red)">Error: ${e}</div>`; }
+}
+
+// ── Modal ────────────────────────────────────────────────────────────
+let _modalIid='', _modalDec='';
+function openModal(iid, decision) {
+  _modalIid=iid; _modalDec=decision;
+  document.getElementById('modalTitle').textContent = decision==='approve'?'Approve Action':'Reject Action';
+  document.getElementById('modalDesc').textContent = `Incident: ${iid}`;
+  document.getElementById('modalReason').value = '';
+  document.getElementById('modal').classList.add('show');
+  document.getElementById('modalConfirm').onclick = confirmModal;
+}
+function closeModal() { document.getElementById('modal').classList.remove('show'); }
+async function confirmModal() {
+  const reason = document.getElementById('modalReason').value.trim();
+  if (!reason) { alert('Reason is required'); return; }
+  try {
+    await fetch(API+'/api/incidents/action', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({incident_id:_modalIid,decision:_modalDec,reason})});
+    closeModal(); toast(`Incident ${_modalIid} ${_modalDec}d`); loadIncidents();
+  } catch(e) { alert('Error: '+e); }
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol==='https:'?'wss':'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { document.getElementById('wsDot').classList.replace('off','on'); };
+  ws.onclose = () => { document.getElementById('wsDot').classList.replace('on','off'); setTimeout(connectWS,3000); };
+  ws.onmessage = (e) => {
+    try { const d=JSON.parse(e.data);
+      if(d.type==='auto_executed') {
+        loadIncidents();
+        toastAuto(`⚡ AUTO-EXECUTED: ${d.action} on ${d.incident_id} (operator timeout)`);
+      } else if(d.type==='new_incident'||d.type==='incident_update') {
+        loadIncidents(); toast(d.type+': '+(d.data?.title||d.incident_id||''));
+      }
+    } catch(er){}
+  };
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function fmtTime(t){if(!t)return'—';try{return new Date(t).toLocaleString()}catch(e){return String(t).slice(0,19)}}
+function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;
+document.body.appendChild(t);setTimeout(()=>t.remove(),4000);}
+function toastAuto(msg){const t=document.createElement('div');t.className='toast auto';t.textContent=msg;
+document.body.appendChild(t);setTimeout(()=>t.remove(),6000);}
+
+// ── Init ─────────────────────────────────────────────────────────────
+async function checkStatus() {
+  try { const r=await fetch(API+'/api/status'); const d=await r.json();
+    document.getElementById('neo4jDot').classList.toggle('on',d.neo4j==='online');
+    document.getElementById('neo4jDot').classList.toggle('off',d.neo4j!=='online');
+  } catch(e){}
+}
+loadIncidents(); checkStatus(); connectWS();
+setInterval(loadIncidents, 15000);
+setInterval(checkStatus, 30000);
+</script>
+</body>
+</html>
