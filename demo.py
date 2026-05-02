@@ -9,8 +9,11 @@ import sys
 import os
 import requests
 
-DASHBOARD_URL = "http://localhost:8888"
+DASHBOARD_URL = "https://localhost:8888"
 API = DASHBOARD_URL + "/api"
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SCENARIOS = [
     {"scenario": "brute_force",       "source": "logs",     "label": "🚨 Brute Force Attack"},
@@ -41,8 +44,8 @@ def main():
     print("[*] Waiting for services...")
     for i in range(30):
         try:
-            r = requests.get(f"{API}/status", timeout=2)
-            if r.status_code == 200 and r.json().get("neo4j") == "online":
+            r = requests.get(f"{API}/status", timeout=2, verify=False)
+            if r.status_code in [200, 401]: # 401 means API is up but needs auth
                 break
         except Exception:
             pass
@@ -54,6 +57,17 @@ def main():
         return
 
     print("[+] Paladin is ONLINE.")
+    
+    # ── 2.5 Login to get token ────────────────────────────────────────
+    print("[*] Logging in...")
+    r = requests.post(f"{API}/login", json={"username": "admin", "password": "admin"}, verify=False)
+    if not r.ok:
+        print("[!] Failed to login. Exiting.")
+        proc.terminate()
+        return
+    token = r.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    
     print(f"[+] Dashboard: {DASHBOARD_URL}\n")
 
     # ── 3. Trigger scenarios ──────────────────────────────────────────
@@ -63,7 +77,7 @@ def main():
         try:
             r = requests.post(f"{API}/scenario", json={
                 "scenario": s["scenario"], "source": s["source"],
-            }, timeout=5)
+            }, timeout=5, verify=False, headers=headers)
             print("✅" if r.status_code == 200 else f"❌ {r.status_code}")
         except Exception as e:
             print(f"❌ {e}")
@@ -78,7 +92,7 @@ def main():
     try:
         while True:
             try:
-                r = requests.get(f"{API}/incidents", timeout=3)
+                r = requests.get(f"{API}/incidents", timeout=3, verify=False, headers=headers)
                 incidents = r.json().get("incidents", []) if r.ok else []
             except Exception:
                 incidents = []

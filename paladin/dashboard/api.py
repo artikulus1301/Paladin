@@ -14,10 +14,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
+from paladin.dashboard.auth import create_access_token, verify_token, verify_ws_token
 
 log = structlog.get_logger(__name__)
 
@@ -50,6 +51,18 @@ class ScenarioRequest(BaseModel):
     source: str  # "logs", "emails", "messages", "calls"
     actor_uid: Optional[str] = None
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    # Dummy auth for demo
+    if req.username == "admin" and req.password == "admin":
+        token = create_access_token({"sub": req.username})
+        return {"access_token": token, "token_type": "bearer"}
+    raise HTTPException(status_code=401, detail="Incorrect username or password")
+
 
 # ── Incidents ─────────────────────────────────────────────────────────────────
 
@@ -57,6 +70,7 @@ class ScenarioRequest(BaseModel):
 async def get_incidents(
     status: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
+    user: dict = Depends(verify_token),
 ):
     if not _neo4j:
         raise HTTPException(503, "Neo4j not connected")
@@ -65,7 +79,7 @@ async def get_incidents(
 
 
 @app.post("/api/incidents/action")
-async def handle_incident_action(action: IncidentAction):
+async def handle_incident_action(action: IncidentAction, user: dict = Depends(verify_token)):
     if not _neo4j:
         raise HTTPException(503, "Neo4j not connected")
     if action.decision not in ("approve", "reject"):
@@ -95,6 +109,7 @@ async def handle_incident_action(action: IncidentAction):
 async def get_action_log(
     action_type: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
+    user: dict = Depends(verify_token),
 ):
     if not _neo4j:
         raise HTTPException(503, "Neo4j not connected")
@@ -105,7 +120,7 @@ async def get_action_log(
 # ── Graph Viewer ──────────────────────────────────────────────────────────────
 
 @app.get("/api/graph/{incident_id}")
-async def get_incident_graph(incident_id: str):
+async def get_incident_graph(incident_id: str, user: dict = Depends(verify_token)):
     if not _neo4j:
         raise HTTPException(503, "Neo4j not connected")
     subgraph = await _neo4j.get_incident_subgraph(incident_id)
@@ -115,7 +130,7 @@ async def get_incident_graph(incident_id: str):
 # ── Scenario Trigger (for demo/testing) ───────────────────────────────────────
 
 @app.post("/api/scenario")
-async def trigger_scenario(req: ScenarioRequest):
+async def trigger_scenario(req: ScenarioRequest, user: dict = Depends(verify_token)):
     if not _event_bus:
         raise HTTPException(503, "Event bus not initialized")
     # Put scenario request on the event bus for the orchestrator to pick up
@@ -134,7 +149,7 @@ class ModeRequest(BaseModel):
     mode: str
 
 @app.post("/api/config/mode")
-async def set_mode(req: ModeRequest):
+async def set_mode(req: ModeRequest, user: dict = Depends(verify_token)):
     if not _auto_exec:
         raise HTTPException(503, "AutoExecutor not available")
     
@@ -151,7 +166,7 @@ async def set_mode(req: ModeRequest):
 # ── System Status ─────────────────────────────────────────────────────────────
 
 @app.get("/api/status")
-async def system_status():
+async def system_status(user: dict = Depends(verify_token)):
     neo4j_ok = False
     if _neo4j:
         try:
@@ -173,6 +188,20 @@ async def system_status():
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
+    
+    # Wait for authentication message
+    auth_data = await ws.receive_text()
+    token_valid = False
+    if auth_data.startswith("Bearer "):
+        token = auth_data.split(" ")[1]
+        if verify_ws_token(token):
+            token_valid = True
+            
+    if not token_valid:
+        await ws.send_text("error: Unauthorized")
+        await ws.close()
+        return
+
     _connected_ws.append(ws)
     log.info("ws_connected", total=len(_connected_ws))
     try:

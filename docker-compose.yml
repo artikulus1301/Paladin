@@ -52,7 +52,7 @@ services:
         condition: service_healthy
     entrypoint: >
       sh -c "
-        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen3:8b\"}' &&
+        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen3.5:9b\"}' &&
         curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"nomic-embed-text\"}' &&
         echo 'Models pulled successfully'
       "
@@ -75,7 +75,7 @@ services:
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme123}
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5:9b}
       - SEARXNG_URL=${SEARXNG_URL:-https://searx.be}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - MAX_NEO4J_RESULTS=${MAX_NEO4J_RESULTS:-10}

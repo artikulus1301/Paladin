@@ -19,7 +19,7 @@ logs:
 
 # Pull Qwen model into Ollama (runs automatically on first start)
 pull-models:
-	docker compose exec ollama ollama pull qwen3:8b
+	docker compose exec ollama ollama pull qwen3.5:9b
 	docker compose exec ollama ollama pull nomic-embed-text
 
 # Open Cypher shell in Neo4j

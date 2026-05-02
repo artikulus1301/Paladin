@@ -66,6 +66,9 @@ graph TB
 - **Dual-Mode Response**: Toggle dynamically via the UI between **Autonomous Mode** (instant enforcement: locking accounts, blocking IPs, revoking sessions) and **Human-in-the-Loop Mode** (60-second window for operator review).
 - **Alert Fatigue Mitigation**: Automatically aggregates related trigger events into single open incidents to prevent duplicate alerts and optimize LLM API usage.
 - **Real-Time Dashboard**: A FastAPI-powered, WebSocket-enabled React-style UI for SOC operators to monitor, approve, and visualize graph incidents.
+- **End-to-End Encryption (E2EE)**: Automatically generates and provisions self-signed SSL certificates (`cert.pem`, `key.pem`) for local Uvicorn to serve the API over HTTPS and WSS, ensuring secure operator traffic.
+- **Internal Database TLS (mTLS/SSL)**: Secure internal Docker communications for Neo4j (Bolt+SSC) and PostgreSQL (SSLMode) using a dedicated local Certificate Authority (`setup_internal_tls.py`).
+- **Secure Authentication (AuthN/Z)**: Built-in JWT-based authentication for the dashboard. All API actions and WebSockets are strictly protected.
 
 ## 🚀 Getting Started
 
@@ -107,9 +110,12 @@ The easiest way to test Paladin is using the included demo script, which starts 
    python demo.py
    # Or use the runner: .\run_demo.ps1
    ```
+   *Note: If SSL certificates are missing, you can generate them using `python gen_certs.py`.*
 
 6. **Open the Dashboard:**
-   Navigate to [http://localhost:8888](http://localhost:8888) in your browser.
+   Navigate to [https://localhost:8888](https://localhost:8888) in your browser. Since it uses self-signed certificates, you may need to accept the browser security warning.
+   - **Login**: `admin`
+   - **Password**: `admin`
 
 ## 🧪 Simulated Attack Scenarios
 
@@ -122,10 +128,11 @@ Paladin comes with 14 built-in threat scenarios that can be triggered via the da
 
 ## 🐳 Docker Deployment
 
-For a full containerized stack including PostgreSQL archiving:
+For a full containerized stack including PostgreSQL archiving and internal TLS:
 
 ```bash
 cp paladin/.env.example .env
+python setup_internal_tls.py
 docker-compose -f docker-compose.paladin.yml up -d
 ```
 

@@ -151,13 +151,61 @@ padding:10px;border-radius:6px;min-height:80px;font-family:var(--font);font-size
   <button class="btn btn-detail" onclick="closeModal()">Cancel</button>
 </div></div>
 
+<!-- Login Overlay -->
+<div class="modal-overlay" id="loginOverlay" style="display:flex; background:var(--bg)">
+  <div class="modal" style="max-width:320px; text-align:center">
+    <h3>⛨ PALADIN Login</h3>
+    <input id="loginUser" placeholder="Username" style="width:100%; padding:10px; margin-bottom:10px; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:6px;">
+    <input id="loginPass" type="password" placeholder="Password" style="width:100%; padding:10px; margin-bottom:16px; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:6px;">
+    <button class="btn btn-approve" style="width:100%" onclick="doLogin()">Login</button>
+    <div id="loginErr" style="color:var(--red); font-size:12px; margin-top:10px; display:none"></div>
+  </div>
+</div>
+
 <script>
 const API = window.location.origin;
 let ws = null;
+let authToken = localStorage.getItem('paladin_token');
+
+async function apiFetch(path, options={}) {
+  if (!options.headers) options.headers = {};
+  if (authToken) options.headers['Authorization'] = 'Bearer ' + authToken;
+  const res = await fetch(API + path, options);
+  if (res.status === 401) {
+    document.getElementById('loginOverlay').style.display = 'flex';
+    authToken = null;
+    localStorage.removeItem('paladin_token');
+  }
+  return res;
+}
+
+async function doLogin() {
+  const u = document.getElementById('loginUser').value;
+  const p = document.getElementById('loginPass').value;
+  try {
+    const r = await fetch(API+'/api/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:u, password:p})
+    });
+    if (r.ok) {
+      const d = await r.json();
+      authToken = d.access_token;
+      localStorage.setItem('paladin_token', authToken);
+      document.getElementById('loginOverlay').style.display = 'none';
+      initApp();
+    } else {
+      document.getElementById('loginErr').textContent = 'Invalid credentials';
+      document.getElementById('loginErr').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('loginErr').textContent = 'Connection error';
+    document.getElementById('loginErr').style.display = 'block';
+  }
+}
 
 async function setMode(mode) {
   try {
-    const r = await fetch(API+'/api/config/mode', {
+    const r = await apiFetch('/api/config/mode', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode})
@@ -183,8 +231,9 @@ function switchTab(name) {
 
 // ── Fetch incidents ─────────────────────────────────────────────────
 async function loadIncidents() {
+  if (!authToken) return;
   try {
-    const r = await fetch(API+'/api/incidents');
+    const r = await apiFetch('/api/incidents');
     const d = await r.json();
     document.getElementById('incCount').textContent = d.count;
     const el = document.getElementById('incidentList');
@@ -216,8 +265,9 @@ async function loadIncidents() {
 
 // ── Actions log ─────────────────────────────────────────────────────
 async function loadActions() {
+  if (!authToken) return;
   try {
-    const r = await fetch(API+'/api/actions');
+    const r = await apiFetch('/api/actions');
     const d = await r.json();
     document.getElementById('actionBody').innerHTML = d.actions.map(a => `<tr>
       <td>${fmtTime(a.timestamp)}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(a.incident_id)}</td>
@@ -229,11 +279,12 @@ async function loadActions() {
 
 // ── Graph ────────────────────────────────────────────────────────────
 async function loadGraph() {
+  if (!authToken) return;
   const id = document.getElementById('graphIncId').value.trim();
   if (!id) return;
   const el = document.getElementById('graphView');
   try {
-    const r = await fetch(API+'/api/graph/'+id);
+    const r = await apiFetch('/api/graph/'+id);
     const d = await r.json();
     const nodes = d.nodes||[];
     if (!nodes.length) { el.innerHTML='<div class="empty">No graph data</div>'; return; }
@@ -261,7 +312,7 @@ async function triggerScenario() {
   const lg = document.getElementById('scenLog');
   lg.innerHTML += `<div>[${new Date().toLocaleTimeString()}] Triggering ${body.scenario} on ${body.source}...</div>`;
   try {
-    const r = await fetch(API+'/api/scenario', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const r = await apiFetch('/api/scenario', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d = await r.json();
     lg.innerHTML += `<div style="color:var(--green)">[${new Date().toLocaleTimeString()}] ✓ ${JSON.stringify(d)}</div>`;
   } catch(e) { lg.innerHTML += `<div style="color:var(--red)">Error: ${e}</div>`; }
@@ -282,7 +333,7 @@ async function confirmModal() {
   const reason = document.getElementById('modalReason').value.trim();
   if (!reason) { alert('Reason is required'); return; }
   try {
-    await fetch(API+'/api/incidents/action', {method:'POST',headers:{'Content-Type':'application/json'},
+    await apiFetch('/api/incidents/action', {method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({incident_id:_modalIid,decision:_modalDec,reason})});
     closeModal(); toast(`Incident ${_modalIid} ${_modalDec}d`); loadIncidents();
   } catch(e) { alert('Error: '+e); }
@@ -290,9 +341,13 @@ async function confirmModal() {
 
 // ── WebSocket ────────────────────────────────────────────────────────
 function connectWS() {
+  if (!authToken) return;
   const proto = location.protocol==='https:'?'wss':'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => { document.getElementById('wsDot').classList.replace('off','on'); };
+  ws.onopen = () => { 
+    ws.send('Bearer ' + authToken);
+    document.getElementById('wsDot').classList.replace('off','on'); 
+  };
   ws.onclose = () => { document.getElementById('wsDot').classList.replace('on','off'); setTimeout(connectWS,3000); };
   ws.onmessage = (e) => {
     try { const d=JSON.parse(e.data);
@@ -316,14 +371,22 @@ document.body.appendChild(t);setTimeout(()=>t.remove(),6000);}
 
 // ── Init ─────────────────────────────────────────────────────────────
 async function checkStatus() {
-  try { const r=await fetch(API+'/api/status'); const d=await r.json();
+  if (!authToken) return;
+  try { const r=await apiFetch('/api/status'); const d=await r.json();
     document.getElementById('neo4jDot').classList.toggle('on',d.neo4j==='online');
     document.getElementById('neo4jDot').classList.toggle('off',d.neo4j!=='online');
   } catch(e){}
 }
-loadIncidents(); checkStatus(); connectWS();
-setInterval(loadIncidents, 15000);
-setInterval(checkStatus, 30000);
+function initApp() {
+  loadIncidents(); checkStatus(); connectWS();
+  setInterval(loadIncidents, 15000);
+  setInterval(checkStatus, 30000);
+}
+
+if (authToken) {
+  document.getElementById('loginOverlay').style.display = 'none';
+  initApp();
+}
 </script>
 </body>
 </html>

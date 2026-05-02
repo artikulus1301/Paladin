@@ -14,9 +14,14 @@ services:
       NEO4J_dbms_security_procedures_unrestricted: apoc.*
       NEO4J_dbms_memory_heap_initial__size: 512m
       NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_dbms_ssl_policy_bolt_enabled: "true"
+      NEO4J_dbms_ssl_policy_bolt_base__directory: /certificates
+      NEO4J_dbms_ssl_policy_bolt_private__key: server.key
+      NEO4J_dbms_ssl_policy_bolt_public__certificate: server.crt
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+      - ./certs/neo4j:/certificates
     healthcheck:
       test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-changeme123}", "RETURN 1"]
       interval: 15s
@@ -33,8 +38,16 @@ services:
       POSTGRES_USER: paladin
       POSTGRES_PASSWORD: paladin
       POSTGRES_DB: paladin_archive
+    entrypoint: >
+      sh -c "
+      cp /tmp/certs/server.* /var/lib/postgresql/ &&
+      chown postgres:postgres /var/lib/postgresql/server.* &&
+      chmod 600 /var/lib/postgresql/server.key &&
+      docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/var/lib/postgresql/server.crt -c ssl_key_file=/var/lib/postgresql/server.key
+      "
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./certs/postgres:/tmp/certs
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paladin"]
       interval: 10s
@@ -70,7 +83,7 @@ services:
         condition: service_healthy
     entrypoint: >
       sh -c "
-        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen3:8b\"}' &&
+        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen3.5:9b\"}' &&
         curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"nomic-embed-text\"}' &&
         echo 'Models pulled successfully'
       "
@@ -110,12 +123,12 @@ services:
       - "8888:8888"
     environment:
       - PALADIN_MODE=dummy
-      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_URI=bolt+ssc://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme123}
-      - POSTGRES_DSN=postgresql://paladin:paladin@postgres:5432/paladin_archive
+      - POSTGRES_DSN=postgresql://paladin:paladin@postgres:5432/paladin_archive?sslmode=require
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5:9b}
       - SEARXNG_URL=http://searxng:8080
       - DASHBOARD_HOST=0.0.0.0
       - DASHBOARD_PORT=8888

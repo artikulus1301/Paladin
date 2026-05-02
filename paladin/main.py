@@ -253,6 +253,8 @@ async def main() -> None:
             host=settings.dashboard_host,
             port=settings.dashboard_port,
             log_level="warning",
+            ssl_keyfile="key.pem" if os.path.exists("key.pem") else None,
+            ssl_certfile="cert.pem" if os.path.exists("cert.pem") else None,
         )
         server = uvicorn.Server(config)
         await server.serve()

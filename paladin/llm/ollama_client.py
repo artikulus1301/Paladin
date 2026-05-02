@@ -1,6 +1,6 @@
 """
 LLM Module — Ollama client reused from Richter (unchanged).
-Supports streaming and non-streaming via Qwen3:8B.
+Supports streaming and non-streaming via Qwen3.5:9B.
 """
 from __future__ import annotations
 
