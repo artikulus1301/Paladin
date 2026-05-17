@@ -611,3 +611,255 @@ class Neo4jClient:
                 uid=uid, flagged=flagged, isolated=isolated,
                 incident_id=incident_id,
             )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ── Forensic Layer CRUD (Paladin 2.0) ─────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def create_forensic_plan(self, plan: dict) -> str:
+        """Create a ForensicPlan node."""
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                CREATE (p:ForensicPlan {
+                    plan_id:         $plan_id,
+                    incident_id:     $incident_id,
+                    status:          $status,
+                    working_plan:    $working_plan,
+                    iteration_count: $iteration_count,
+                    max_iterations:  $max_iterations,
+                    created_at:      datetime(),
+                    updated_at:      datetime(),
+                    completion_reason: ""
+                })
+                """, **plan)
+        return plan["plan_id"]
+
+    async def link_plan_to_incident(self, incident_id: str, plan_id: str) -> None:
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (i:Incident {incident_id: $iid}), (p:ForensicPlan {plan_id: $pid})
+                MERGE (i)-[:HAS_FORENSIC_PLAN]->(p)
+                """, iid=incident_id, pid=plan_id)
+
+    async def create_todo_item(self, item: dict) -> None:
+        """Create a TodoItem node linked to its ForensicPlan."""
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                CREATE (t:TodoItem {
+                    item_id:        $item_id,
+                    plan_id:        $plan_id,
+                    order_index:    $order_index,
+                    description:    $description,
+                    status:         $status,
+                    result_summary: "",
+                    blocked_reason: $blocked_reason,
+                    recheck_reason: $recheck_reason,
+                    iteration_added: $iteration_added,
+                    mcp_function:   $mcp_function,
+                    created_at:     datetime()
+                })
+                WITH t
+                MATCH (p:ForensicPlan {plan_id: $plan_id})
+                MERGE (p)-[:CONTAINS_TODO]->(t)
+                """,
+                item_id=item["item_id"],
+                plan_id=item["plan_id"],
+                order_index=item.get("order_index", 0),
+                description=item.get("description", ""),
+                status=item.get("status", "PENDING"),
+                blocked_reason=item.get("blocked_reason", ""),
+                recheck_reason=item.get("recheck_reason", ""),
+                iteration_added=item.get("iteration_added", 0),
+                mcp_function=item.get("mcp_function", ""),
+            )
+
+    async def update_todo_status(self, item_id: str, status: str,
+                                 result_summary: str = "",
+                                 blocked_reason: str = "") -> None:
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (t:TodoItem {item_id: $item_id})
+                SET t.status = $status,
+                    t.result_summary = CASE WHEN $summary <> "" THEN $summary ELSE t.result_summary END,
+                    t.blocked_reason = CASE WHEN $blocked <> "" THEN $blocked ELSE t.blocked_reason END
+                WITH t
+                MATCH (p:ForensicPlan {plan_id: t.plan_id})
+                SET p.updated_at = datetime()
+                """,
+                item_id=item_id, status=status,
+                summary=result_summary, blocked=blocked_reason)
+
+    async def create_finding(self, finding: dict) -> str:
+        """Create a Finding node linked to plan and todo item."""
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                CREATE (f:Finding {
+                    finding_id:      $finding_id,
+                    plan_id:         $plan_id,
+                    todo_item_id:    $todo_item_id,
+                    description:     $description,
+                    evidence_source: $evidence_source,
+                    tool_used:       $tool_used,
+                    tool_output_hash: $tool_output_hash,
+                    confidence:      $confidence,
+                    verified:        $verified,
+                    verification_method: "",
+                    evidence_quote:  $evidence_quote,
+                    iteration_number: $iteration_number,
+                    created_at:      datetime()
+                })
+                WITH f
+                MATCH (p:ForensicPlan {plan_id: $plan_id})
+                MERGE (p)-[:PRODUCED]->(f)
+                WITH f
+                MATCH (t:TodoItem {item_id: $todo_item_id})
+                MERGE (f)-[:PRODUCED_BY]->(t)
+                """,
+                finding_id=finding["finding_id"],
+                plan_id=finding["plan_id"],
+                todo_item_id=finding.get("todo_item_id", ""),
+                description=finding.get("description", ""),
+                evidence_source=finding.get("evidence_source", ""),
+                tool_used=finding.get("tool_used", ""),
+                tool_output_hash=finding.get("tool_output_hash", ""),
+                confidence=finding.get("confidence", 50),
+                verified=finding.get("verified", False),
+                evidence_quote=finding.get("evidence_quote", ""),
+                iteration_number=finding.get("iteration_number", 0),
+            )
+        return finding["finding_id"]
+
+    async def get_finding(self, finding_id: str) -> dict | None:
+        async with self._driver.session() as session:
+            result = await session.run(
+                "MATCH (f:Finding {finding_id: $fid}) RETURN properties(f) AS props",
+                fid=finding_id)
+            record = await result.single()
+            return dict(record["props"]) if record else None
+
+    async def update_finding_verification(self, finding_id: str,
+                                          verified: bool, method: str) -> None:
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (f:Finding {finding_id: $fid})
+                SET f.verified = $verified, f.verification_method = $method
+                """, fid=finding_id, verified=verified, method=method)
+
+    async def get_findings_for_plan(self, plan_id: str) -> list[dict]:
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (p:ForensicPlan {plan_id: $pid})-[:PRODUCED]->(f:Finding)
+                RETURN properties(f) AS props
+                ORDER BY f.created_at ASC
+                """, pid=plan_id)
+            return [dict(r["props"]) for r in await result.data()]
+
+    async def get_plan_with_items(self, plan_id: str) -> dict | None:
+        """Get plan + all todo items + findings in one query."""
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (p:ForensicPlan {plan_id: $pid})
+                OPTIONAL MATCH (p)-[:CONTAINS_TODO]->(t:TodoItem)
+                OPTIONAL MATCH (p)-[:PRODUCED]->(f:Finding)
+                WITH p,
+                     collect(DISTINCT properties(t)) AS todos,
+                     collect(DISTINCT properties(f)) AS findings
+                RETURN properties(p) AS plan, todos, findings
+                """, pid=plan_id)
+            record = await result.single()
+            if not record:
+                return None
+            plan = dict(record["plan"])
+            plan["todo_items"] = [dict(t) for t in record["todos"] if t]
+            plan["findings"] = [dict(f) for f in record["findings"] if f]
+            return plan
+
+    async def update_plan_status(self, plan_id: str, status: str,
+                                 completion_reason: str = "") -> None:
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (p:ForensicPlan {plan_id: $pid})
+                SET p.status = $status, p.updated_at = datetime(),
+                    p.completion_reason = CASE WHEN $reason <> "" THEN $reason
+                                          ELSE p.completion_reason END
+                """, pid=plan_id, status=status, reason=completion_reason)
+
+    async def increment_plan_iteration(self, plan_id: str) -> None:
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (p:ForensicPlan {plan_id: $pid})
+                SET p.iteration_count = p.iteration_count + 1,
+                    p.updated_at = datetime()
+                """, pid=plan_id)
+
+    async def create_plan_version(self, plan_id: str) -> None:
+        """Create version history snapshot via HAS_VERSION relationship."""
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (p:ForensicPlan {plan_id: $pid})
+                CREATE (v:ForensicPlan {
+                    plan_id: p.plan_id + "_v" + toString(p.iteration_count),
+                    incident_id: p.incident_id,
+                    status: p.status,
+                    working_plan: p.working_plan,
+                    iteration_count: p.iteration_count,
+                    max_iterations: p.max_iterations,
+                    created_at: p.created_at,
+                    updated_at: datetime(),
+                    is_version: true
+                })
+                MERGE (p)-[:HAS_VERSION]->(v)
+                """, pid=plan_id)
+
+    async def add_contradicts_edge(self, finding_a: str, finding_b: str,
+                                   description: str,
+                                   contradiction_type: str) -> None:
+        async with self._driver.session() as session:
+            await session.run(
+                """
+                MATCH (a:Finding {finding_id: $a}), (b:Finding {finding_id: $b})
+                MERGE (a)-[:CONTRADICTS {
+                    description: $desc,
+                    contradiction_type: $ctype,
+                    detected_at: datetime()
+                }]->(b)
+                """, a=finding_a, b=finding_b,
+                desc=description, ctype=contradiction_type)
+
+    async def get_contradictions_for_plan(self, plan_id: str) -> list[dict]:
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (p:ForensicPlan {plan_id: $pid})-[:PRODUCED]->(a:Finding)
+                      -[c:CONTRADICTS]->(b:Finding)
+                RETURN a.finding_id AS finding_a, b.finding_id AS finding_b,
+                       c.description AS description,
+                       c.contradiction_type AS contradiction_type
+                """, pid=plan_id)
+            return await result.data()
+
+    async def get_forensic_plan_for_incident(self, incident_id: str) -> dict | None:
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (i:Incident {incident_id: $iid})-[:HAS_FORENSIC_PLAN]->(p:ForensicPlan)
+                WHERE NOT p.is_version
+                RETURN p.plan_id AS plan_id
+                ORDER BY p.created_at DESC LIMIT 1
+                """, iid=incident_id)
+            record = await result.single()
+            if record:
+                return await self.get_plan_with_items(record["plan_id"])
+            return None
+

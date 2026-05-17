@@ -9,6 +9,7 @@ import random
 import sys
 import uuid
 from datetime import datetime, timezone
+import os
 
 import structlog
 import uvicorn
@@ -91,10 +92,52 @@ async def main() -> None:
     from paladin.dashboard.api import broadcast_incident
     auto_exec = AutoExecutor(neo4j, broadcast_fn=broadcast_incident)
 
+    # ── Layer: Forensic (Paladin 2.0) ─────────────────────────────────────
+    forensic_plan_mgr = None
+    hallucination_tracker = None
+
+    if settings.forensic_enabled:
+        from paladin.forensic.action_verifier import ForensicActionVerifier
+        from paladin.forensic.sandbox_manager import SandboxManager
+        from paladin.forensic.mcp_server import SIFTMCPServer
+        from paladin.forensic.pg_store import ForensicPGStore
+        from paladin.forensic.plan_manager import ForensicPlanManager
+        from paladin.forensic.correlation_engine import CorrelationEngine
+        from paladin.forensic.hallucination_tracker import HallucinationTracker
+
+        forensic_verifier = ForensicActionVerifier()
+        sandbox_mgr = SandboxManager()
+        pg_store = ForensicPGStore()
+
+        # Initialize PostgreSQL for forensic logs (best-effort)
+        try:
+            await pg_store.initialize(settings.postgres_dsn)
+            log.info("forensic_pg_store_ready")
+        except Exception as e:
+            log.warning("forensic_pg_store_unavailable", error=str(e))
+            pg_store = None
+
+        mcp_server = SIFTMCPServer(sandbox_mgr, forensic_verifier, pg_store)
+        forensic_plan_mgr = ForensicPlanManager(
+            neo4j=neo4j, llm=llm, mcp_server=mcp_server,
+            sandbox=sandbox_mgr, pg_store=pg_store,
+            broadcast_fn=broadcast_incident)
+        correlation_engine = CorrelationEngine(neo4j, broadcast_fn=broadcast_incident)
+        hallucination_tracker = HallucinationTracker(neo4j, pg_store)
+
+        # Inject into incident manager for mode routing
+        incident_mgr.set_forensic_plan_manager(forensic_plan_mgr)
+
+        log.info("forensic_layer_initialized",
+                 mcp_functions=mcp_server.get_available_functions(),
+                 pipeline_threshold=settings.severity_pipeline_threshold)
+
     # ── Layer: Dashboard ──────────────────────────────────────────────────
     from paladin.dashboard.api import app as dashboard_app, init_dashboard
     scenario_bus: asyncio.Queue = asyncio.Queue()
-    init_dashboard(neo4j, scenario_bus, auto_exec)
+    init_dashboard(neo4j, scenario_bus, auto_exec,
+                   forensic_plan_mgr=forensic_plan_mgr,
+                   hallucination_tracker=hallucination_tracker)
 
     # ── Queues (replace Kafka in dummy mode) ──────────────────────────────
     event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
@@ -124,6 +167,20 @@ async def main() -> None:
 
         # ── LLM notification ──────────────────────────────────────────
         try:
+            # ── Paladin 2.0: Pipeline Mode fork ─────────────────────
+            if llm_context.get("forensic_mode") == "pipeline" and forensic_plan_mgr:
+                log.info("pipeline_mode_activated",
+                         incident_id=llm_context["incident_id"])
+                # Launch forensic investigation asynchronously
+                asyncio.create_task(
+                    forensic_plan_mgr.run_full_investigation(
+                        incident_id=llm_context["incident_id"],
+                        context=llm_context,
+                        evidence_path=settings.forensic_evidence_base,
+                    )
+                )
+                # Still run normal LLM for initial summary
+
             prompt = build_incident_prompt(llm_context)
             llm_response = await llm.generate(prompt, system=SYSTEM_PROMPT)
             parsed = parse_llm_response(llm_response)
@@ -141,10 +198,12 @@ async def main() -> None:
                     "llm_summary": parsed["summary"],
                     "action_proposed": parsed["action"],
                     "action_status": "pending",
+                    "forensic_mode": llm_context.get("forensic_mode", "tool"),
                 })
                 log.info("incident_processed",
                          id=llm_context["incident_id"],
                          action=parsed["action"],
+                         forensic_mode=llm_context.get("forensic_mode"),
                          approved=True)
             else:
                 # Retry with feedback
@@ -162,6 +221,7 @@ async def main() -> None:
                 "severity": llm_context["severity"],
                 "score": llm_context["score"],
                 "action": parsed["action"],
+                "forensic_mode": llm_context.get("forensic_mode", "tool"),
             })
 
         except Exception as e:

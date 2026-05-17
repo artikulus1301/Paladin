@@ -87,6 +87,27 @@ class Settings(BaseSettings):
     archive_incident_days: int = Field(180, env="ARCHIVE_INCIDENT_DAYS")
     archive_risk_score_cutoff: float = Field(0.2, env="ARCHIVE_RISK_CUTOFF")
 
+    # ── Forensic Layer (Paladin 2.0) ──────────────────────────────────────────
+    severity_pipeline_threshold: float = Field(
+        0.65, env="SEVERITY_PIPELINE_THRESHOLD",
+        description="Score above which Pipeline Mode activates instead of Tool Mode",
+    )
+    sift_sandbox_image: str = Field(
+        "paladin/sift-sandbox:latest", env="SIFT_SANDBOX_IMAGE",
+    )
+    forensic_evidence_base: str = Field(
+        "/data/evidence", env="FORENSIC_EVIDENCE_BASE",
+    )
+    forensic_output_base: str = Field(
+        "/data/forensic_output", env="FORENSIC_OUTPUT_BASE",
+    )
+    sandbox_tmpfs_size: str = Field("2g", env="SANDBOX_TMPFS_SIZE")
+    sandbox_cpu_limit: float = Field(2.0, env="SANDBOX_CPU_LIMIT")
+    sandbox_memory_limit: str = Field("4g", env="SANDBOX_MEMORY_LIMIT")
+    sandbox_exec_timeout: int = Field(300, env="SANDBOX_EXEC_TIMEOUT")
+    max_forensic_iterations: int = Field(5, env="MAX_FORENSIC_ITERATIONS")
+    forensic_enabled: bool = Field(True, env="FORENSIC_ENABLED")
+
     # ── Dummy generators ──────────────────────────────────────────────────────
     dummy_employee_count: int = Field(25, env="DUMMY_EMPLOYEE_COUNT")
     dummy_events_per_minute: int = Field(10, env="DUMMY_EVENTS_PER_MIN")

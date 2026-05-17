@@ -140,6 +140,26 @@ services:
       - paladin_data:/app/data
       - paladin_logs:/app/logs
 
+  # ── SIFT Sandbox (Paladin 2.0) ──────────────────────────────────────────────
+  # This is the BUILD definition only. Actual sandbox containers are created
+  # dynamically by SandboxManager per-investigation with strict isolation.
+  sift-sandbox:
+    build:
+      context: ./docker/sift-sandbox
+      dockerfile: Dockerfile
+    image: paladin/sift-sandbox:latest
+    container_name: paladin_sift_build
+    # This container is NOT run directly — it only builds the image.
+    # ForensicPlanManager creates ephemeral instances via docker API with:
+    #   - network: none
+    #   - read_only: true
+    #   - no-new-privileges: true
+    #   - /evidence mounted read-only
+    #   - /cases as tmpfs
+    profiles:
+      - build-only
+    entrypoint: ["echo", "SIFT sandbox image built successfully"]
+
 volumes:
   neo4j_data:
   neo4j_logs:
@@ -147,3 +167,5 @@ volumes:
   ollama_models:
   paladin_data:
   paladin_logs:
+  forensic_evidence:
+  forensic_output:

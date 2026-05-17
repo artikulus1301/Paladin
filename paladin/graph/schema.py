@@ -24,6 +24,11 @@ class NodeLabel(str, Enum):
     DEPARTMENT = "Department"
     ROLE = "Role"
     CLEARANCE_LEVEL = "ClearanceLevel"
+    # ── Forensic Layer (Paladin 2.0) ──────────────────────────────────────
+    FORENSIC_PLAN = "ForensicPlan"
+    TODO_ITEM = "TodoItem"
+    FINDING = "Finding"
+    TOOL_EXECUTION = "ToolExecution"
 
 
 # ── Relationship Types ─────────────────────────────────────────────────────────
@@ -66,6 +71,17 @@ class RelType(str, Enum):
     # Process
     STARTED_PROCESS = "STARTED_PROCESS"
 
+    # ── Forensic Layer (Paladin 2.0) ──────────────────────────────────────
+    HAS_FORENSIC_PLAN = "HAS_FORENSIC_PLAN"
+    CONTAINS_TODO = "CONTAINS_TODO"
+    PRODUCED = "PRODUCED"
+    PRODUCED_BY = "PRODUCED_BY"
+    IMPLICATES = "IMPLICATES"
+    INVOLVES_DEVICE = "INVOLVES_DEVICE"
+    CONTRADICTS = "CONTRADICTS"
+    VERIFIED_BY = "VERIFIED_BY"
+    HAS_VERSION = "HAS_VERSION"
+
 
 # ── Clearance Levels ──────────────────────────────────────────────────────────
 
@@ -90,6 +106,10 @@ INIT_CONSTRAINTS: List[str] = [
     "CREATE CONSTRAINT department_name IF NOT EXISTS FOR (d:Department) REQUIRE d.name IS UNIQUE",
     "CREATE CONSTRAINT role_name IF NOT EXISTS FOR (r:Role) REQUIRE r.name IS UNIQUE",
     "CREATE CONSTRAINT clearance_name IF NOT EXISTS FOR (c:ClearanceLevel) REQUIRE c.level IS UNIQUE",
+    # ── Forensic constraints (Paladin 2.0) ────────────────────────────────
+    "CREATE CONSTRAINT plan_id IF NOT EXISTS FOR (p:ForensicPlan) REQUIRE p.plan_id IS UNIQUE",
+    "CREATE CONSTRAINT todo_item_id IF NOT EXISTS FOR (t:TodoItem) REQUIRE t.item_id IS UNIQUE",
+    "CREATE CONSTRAINT finding_id IF NOT EXISTS FOR (f:Finding) REQUIRE f.finding_id IS UNIQUE",
 ]
 
 INIT_INDEXES: List[str] = [
@@ -113,6 +133,13 @@ INIT_INDEXES: List[str] = [
 
     # Archive flag
     "CREATE INDEX log_archived IF NOT EXISTS FOR (l:LogEvent) ON (l.archived)",
+
+    # ── Forensic indexes (Paladin 2.0) ────────────────────────────────────
+    "CREATE INDEX plan_status IF NOT EXISTS FOR (p:ForensicPlan) ON (p.status)",
+    "CREATE INDEX plan_incident IF NOT EXISTS FOR (p:ForensicPlan) ON (p.incident_id)",
+    "CREATE INDEX todo_status IF NOT EXISTS FOR (t:TodoItem) ON (t.status)",
+    "CREATE INDEX finding_plan IF NOT EXISTS FOR (f:Finding) ON (f.plan_id)",
+    "CREATE INDEX finding_verified IF NOT EXISTS FOR (f:Finding) ON (f.verified)",
 ]
 
 

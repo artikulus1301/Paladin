@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import structlog
 
+from paladin.config.settings import settings
 from paladin.graph.neo4j_client import Neo4jClient
 from paladin.sap.correlator import CorrelationResult, CorrelationHit
 
@@ -21,10 +22,18 @@ class IncidentManager:
     Creates and manages Incident lifecycle.
     When correlation triggers, creates Incident node and prepares
     structured context for LLM.
+
+    Paladin 2.0: Routes to Pipeline Mode (ForensicPlan + Sandbox) when
+    severity_score >= threshold, otherwise stays in Tool Mode.
     """
 
     def __init__(self, neo4j: Neo4jClient) -> None:
         self._neo4j = neo4j
+        self._forensic_plan_manager = None  # Set by main.py after init
+
+    def set_forensic_plan_manager(self, fpm) -> None:
+        """Inject ForensicPlanManager (avoids circular import)."""
+        self._forensic_plan_manager = fpm
 
     async def maybe_create_incident(
         self, topic: str, event: dict, correlation: CorrelationResult
@@ -92,6 +101,19 @@ class IncidentManager:
 
         # Build LLM context
         llm_context = self._build_llm_context(incident, topic, event, correlation)
+
+        # ── Paladin 2.0: Mode routing based on severity score ─────────
+        if (settings.forensic_enabled and
+                self._forensic_plan_manager and
+                correlation.total_score >= settings.severity_pipeline_threshold):
+            llm_context["forensic_mode"] = "pipeline"
+            log.info("forensic_pipeline_mode",
+                     incident_id=incident_id,
+                     score=correlation.total_score,
+                     threshold=settings.severity_pipeline_threshold)
+        else:
+            llm_context["forensic_mode"] = "tool"
+
         return llm_context
 
     def _extract_employee(self, topic: str, event: dict) -> str | None:

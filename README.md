@@ -136,6 +136,84 @@ python setup_internal_tls.py
 docker-compose -f docker-compose.paladin.yml up -d
 ```
 
+To build the SIFT sandbox image:
+
+```bash
+docker-compose -f docker-compose.paladin.yml --profile build-only build sift-sandbox
+```
+
+---
+
+## 🔬 Paladin 2.0 — Forensic Investigation Layer
+
+Version 2.0 adds a SIFT Workstation-based forensic layer for deep incident investigation.
+Architecture: **Custom MCP Server** pattern (Find Evil! hackathon, SANS Institute).
+
+### Architecture
+
+```
+Incident (score ≥ 0.65)
+  → Pipeline Mode
+    → ForensicPlanManager creates investigation plan via Qwen
+    → SIFT MCP Server executes tools in Docker sandbox
+    → Findings stored in Neo4j with [:PRODUCED], [:CONTRADICTS] edges
+    → Self-Correction Loop detects contradictions, re-plans if needed
+    → Correlation Engine finds cross-source discrepancies
+    → Hallucination Tracker verifies claims vs tool output
+    → Accuracy Report generated for submission
+```
+
+### Security Boundaries (4 layers)
+
+| # | Boundary | Protection |
+|---|----------|------------|
+| 1 | **Action Verifier** | SAFE / REQUIRES_APPROVAL / FORBIDDEN classification |
+| 2 | **MCP Server API** | No destructive functions exist (no rm, dd, chmod, shell) |
+| 3 | **Sandbox Filesystem** | `/evidence` mounted read-only at kernel level |
+| 4 | **Sandbox Network** | `network: none` — zero exfiltration surface |
+
+### Available MCP Functions
+
+| Function | Source | Description |
+|----------|--------|-------------|
+| `get_file_metadata` | stat | File attributes and MIME type |
+| `compute_hash` | md5sum/sha256sum | Cryptographic hash verification |
+| `extract_strings` | strings | IOC pattern extraction |
+| `analyze_process_list` | Volatility3 pslist | Running process analysis |
+| `scan_network_connections` | Volatility3 netscan | Network connection inventory |
+| `extract_loaded_modules` | Volatility3 dlllist | DLL/module analysis |
+| `parse_mft` | analyzeMFT | NTFS timeline reconstruction |
+| `parse_prefetch` | prefetch_parser | Execution history |
+| `extract_registry_hive` | regripper | Registry artifact extraction |
+| `parse_pcap` | tshark | Network traffic analysis |
+| `extract_browser_artifacts` | hindsight | Browser forensics |
+
+### Modes
+
+- **Tool Mode** (score < 0.65): Direct MCP function call, lightweight inline analysis
+- **Pipeline Mode** (score ≥ 0.65): Full investigation — sandbox, plan, self-correction
+
+### New Neo4j Schema
+
+- Nodes: `ForensicPlan`, `TodoItem`, `Finding`
+- Relationships: `HAS_FORENSIC_PLAN`, `CONTAINS_TODO`, `PRODUCED`, `CONTRADICTS`, `HAS_VERSION`
+
+### Modules
+
+```
+paladin/forensic/
+├── action_verifier.py     — Security boundary #1 (SAFE/APPROVAL/FORBIDDEN)
+├── mcp_server.py          — SIFT tool dispatch (Security boundary #2)
+├── mcp_types.py           — Typed Pydantic models for all I/O
+├── sandbox_manager.py     — Docker lifecycle (Security boundaries #3, #4)
+├── plan_manager.py        — ForensicPlanManager (planning + execution + self-correction)
+├── correlation_engine.py  — Cross-source contradiction detection
+├── hallucination_tracker.py — Finding verification + accuracy metrics
+├── prompts.py             — Planning, execution, self-check prompts
+└── pg_store.py            — PostgreSQL: tool_executions, accuracy_metrics
+```
+
 ## 📜 License
 
 [MIT License](LICENSE)
+

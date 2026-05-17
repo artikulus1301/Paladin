@@ -29,13 +29,18 @@ _neo4j = None
 _event_bus: asyncio.Queue | None = None
 _connected_ws: list[WebSocket] = []
 _auto_exec = None
+_forensic_plan_mgr = None
+_hallucination_tracker = None
 
 
-def init_dashboard(neo4j_client, event_bus: asyncio.Queue, auto_exec=None):
-    global _neo4j, _event_bus, _auto_exec
+def init_dashboard(neo4j_client, event_bus: asyncio.Queue, auto_exec=None,
+                   forensic_plan_mgr=None, hallucination_tracker=None):
+    global _neo4j, _event_bus, _auto_exec, _forensic_plan_mgr, _hallucination_tracker
     _neo4j = neo4j_client
     _event_bus = event_bus
     _auto_exec = auto_exec
+    _forensic_plan_mgr = forensic_plan_mgr
+    _hallucination_tracker = hallucination_tracker
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -179,8 +184,52 @@ async def system_status(user: dict = Depends(verify_token)):
     return {
         "neo4j": "online" if neo4j_ok else "offline",
         "websocket_clients": len(_connected_ws),
+        "forensic_enabled": _forensic_plan_mgr is not None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Forensic API (Paladin 2.0) ───────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/forensic/plan/{plan_id}")
+async def get_forensic_plan(plan_id: str, user: dict = Depends(verify_token)):
+    """Get forensic plan with all todo items and findings."""
+    if not _neo4j:
+        raise HTTPException(503, "Neo4j not connected")
+    plan = await _neo4j.get_plan_with_items(plan_id)
+    if not plan:
+        raise HTTPException(404, f"Plan {plan_id} not found")
+    return plan
+
+
+@app.get("/api/forensic/incident/{incident_id}")
+async def get_forensic_plan_for_incident(incident_id: str,
+                                          user: dict = Depends(verify_token)):
+    """Get forensic plan for a specific incident."""
+    if not _neo4j:
+        raise HTTPException(503, "Neo4j not connected")
+    plan = await _neo4j.get_forensic_plan_for_incident(incident_id)
+    if not plan:
+        return {"plan": None, "message": "No forensic plan for this incident"}
+    return plan
+
+
+@app.get("/api/forensic/accuracy/{plan_id}")
+async def get_accuracy_report(plan_id: str, user: dict = Depends(verify_token)):
+    """Generate accuracy report for a forensic plan."""
+    if not _hallucination_tracker:
+        raise HTTPException(503, "Hallucination tracker not available")
+    report = await _hallucination_tracker.generate_accuracy_report(plan_id)
+    return report
+
+
+@app.post("/api/forensic/plan/{plan_id}/approve")
+async def approve_forensic_action(plan_id: str, user: dict = Depends(verify_token)):
+    """Approve a pending forensic action."""
+    # For now, just acknowledge — real approval handled via WebSocket
+    return {"ok": True, "plan_id": plan_id, "action": "approved"}
 
 
 # ── WebSocket for live updates ────────────────────────────────────────────────

@@ -40,3 +40,7 @@ cryptography==42.0.5
 
 # WebSocket support (included in uvicorn[standard])
 websockets>=12.0
+
+# Forensic Layer (Paladin 2.0)
+# Docker SDK is NOT needed — sandbox uses subprocess docker CLI
+# No additional deps required; all forensic tools run inside sandbox container
