@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     run_mode: RunMode = Field(RunMode.DUMMY, env="PALADIN_MODE")
     instance_name: str = Field("paladin-dev", env="PALADIN_INSTANCE")
 
+    # ── Telegram Bot ──────────────────────────────────────────────────────────
+    telegram_token: str = Field("", env="TELEGRAM_TOKEN")
+    telegram_allowed_users: str = Field("", env="TELEGRAM_ALLOWED_USERS")
+
     # ── Neo4j (hot graph) ──────────────────────────────────────────────────────
     neo4j_uri: str = Field("bolt://localhost:7687", env="NEO4J_URI")
     neo4j_user: str = Field("neo4j", env="NEO4J_USER")
@@ -124,6 +128,12 @@ class Settings(BaseSettings):
     @property
     def protected_account_list(self) -> List[str]:
         return [a.strip() for a in self.protected_accounts.split(",") if a.strip()]
+
+    @property
+    def telegram_allowed_user_ids(self) -> List[int]:
+        if not self.telegram_allowed_users:
+            return []
+        return [int(uid.strip()) for uid in self.telegram_allowed_users.split(",") if uid.strip()]
 
     model_config = {
         "env_file": ".env",

@@ -7,6 +7,7 @@ python-dotenv==1.0.1
 
 # NLP
 spacy==3.8.4
+click>=8.1.7
 spacy-transformers==1.4.0
 natasha>=1.6.0
 
@@ -44,3 +45,6 @@ websockets>=12.0
 # Forensic Layer (Paladin 2.0)
 # Docker SDK is NOT needed — sandbox uses subprocess docker CLI
 # No additional deps required; all forensic tools run inside sandbox container
+
+# Telegram Bot
+aiogram>=3.10.0

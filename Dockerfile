@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install click explicitly (required by spacy CLI)
+RUN pip install --no-cache-dir click
+
 # Download SpaCy models (multilingual + English)
 RUN python -m spacy download en_core_web_sm && \
     python -m spacy download ru_core_news_sm && \

@@ -319,13 +319,28 @@ async def main() -> None:
         server = uvicorn.Server(config)
         await server.serve()
 
+    # ── Telegram bot (optional) ───────────────────────────────────────────
+    telegram_bot = None
+    if settings.telegram_token:
+        from paladin.bot.telegram_bot import create_bot, create_dispatcher, set_commands
+        telegram_bot = create_bot()
+        telegram_dp = create_dispatcher(neo4j=neo4j, llm=llm)
+        await set_commands(telegram_bot)
+        log.info("telegram_bot_configured", model=settings.ollama_model)
+
+    async def run_telegram():
+        if telegram_bot:
+            log.info("telegram_bot_starting")
+            await telegram_dp.start_polling(telegram_bot, allowed_updates=["message"])
+
     # ── Launch all ────────────────────────────────────────────────────────
 
     log.info("paladin_ready",
              dashboard=f"http://localhost:{settings.dashboard_port}",
              mode=settings.run_mode,
              auto_execute=settings.auto_execute_enabled,
-             operator_timeout=settings.operator_timeout_seconds)
+             operator_timeout=settings.operator_timeout_seconds,
+             telegram=bool(settings.telegram_token))
 
     tasks = [
         asyncio.create_task(event_consumer()),
@@ -337,6 +352,9 @@ async def main() -> None:
     if settings.run_mode == RunMode.DUMMY:
         tasks.append(asyncio.create_task(start_dummy_generators()))
 
+    if telegram_bot:
+        tasks.append(asyncio.create_task(run_telegram()))
+
     try:
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:
@@ -345,6 +363,8 @@ async def main() -> None:
         log.info("paladin_shutdown")
         await llm.stop()
         await neo4j.close()
+        if telegram_bot:
+            await telegram_bot.session.close()
 
 
 if __name__ == "__main__":
