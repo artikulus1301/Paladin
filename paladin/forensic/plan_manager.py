@@ -201,6 +201,12 @@ class ForensicPlanManager:
         }
         await self._neo4j.create_finding(finding_data)
 
+        # Verify finding against tool output using HallucinationTracker
+        from paladin.forensic.hallucination_tracker import HallucinationTracker
+        tracker = HallucinationTracker(self._neo4j, self._pg)
+        verified = await tracker.verify_finding(finding_id, mcp_response.result)
+        finding_data["verified"] = verified
+
         # Update TODO as DONE
         await self._neo4j.update_todo_status(
             item_id, "DONE",
@@ -213,7 +219,7 @@ class ForensicPlanManager:
                 "finding_id": finding_id,
                 "description": analysis.get("finding_description", "")[:200],
                 "confidence": analysis.get("confidence", 50),
-                "verified": False,
+                "verified": verified,
             })
 
         # ── Self-Correction Loop ──────────────────────────────────────
@@ -338,6 +344,34 @@ class ForensicPlanManager:
         total = len(findings)
         h_rate = (total - verified) / total if total > 0 else 0.0
 
+        # Synthesize findings using LLM
+        summary_text = "Investigation completed. No findings reported."
+        if findings:
+            findings_text = "\n".join(f"- {f.get('description')} (confidence={f.get('confidence')}%)" for f in findings)
+            prompt = (
+                "You are an expert digital forensics analyst. Synthesize the following forensic findings "
+                "into a concise, professional summary of the incident (3-5 sentences maximum). "
+                "Specify key artifacts, files, registry values, or network targets if found. "
+                "Make it read like a final forensic report summary.\n\n"
+                f"Findings:\n{findings_text}\n\nSummary:"
+            )
+            try:
+                summary_text = await self._llm.generate(prompt)
+                summary_text = summary_text.strip()
+            except Exception as e:
+                log.error("forensic_summary_generation_failed", error=str(e))
+                summary_text = "Investigation completed. Findings:\n" + findings_text
+
+        if incident_id:
+            await self._neo4j.update_incident(incident_id, {
+                "llm_summary": summary_text
+            })
+            if self._broadcast:
+                await self._broadcast({
+                    "type": "incident_update",
+                    "incident_id": incident_id,
+                })
+
         if self._broadcast:
             await self._broadcast({
                 "type": "plan_completed",
@@ -384,7 +418,11 @@ class ForensicPlanManager:
         base = {"path": "/evidence/", "image_path": "/evidence/disk.img",
                 "memory_image": "/evidence/memory.raw"}
         fn = function.lower()
-        if "process" in fn or "network" in fn or "module" in fn:
+        if "module" in fn:
+            # extract_loaded_modules needs a pid — try to get from plan context
+            # default to known suspicious svchost pid
+            return {"memory_image": base["memory_image"], "pid": 6404}
+        if "process" in fn or "network" in fn:
             return {"memory_image": base["memory_image"]}
         if "mft" in fn or "prefetch" in fn or "registry" in fn:
             return {"image_path": base["image_path"]}

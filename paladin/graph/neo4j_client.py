@@ -426,7 +426,7 @@ class Neo4jClient:
                   AND (event:LogEvent OR event:Email OR event:Message OR event:Call)
                 RETURN labels(event)[0] AS event_type,
                        event.risk_score AS risk_score,
-                       event.timestamp AS timestamp,
+                       toString(event.timestamp) AS timestamp,
                        type(r) AS relation,
                        properties(event) AS props
                 ORDER BY event.timestamp DESC
@@ -485,7 +485,7 @@ class Neo4jClient:
                        i.severity AS severity,
                        i.score AS score,
                        i.status AS status,
-                       i.created_at AS created_at,
+                       toString(i.created_at) AS created_at,
                        i.llm_summary AS llm_summary,
                        i.action_proposed AS action_proposed,
                        i.action_status AS action_status,
@@ -518,7 +518,7 @@ class Neo4jClient:
                        i.severity AS severity,
                        i.action_proposed AS action,
                        i.action_status AS status,
-                       i.updated_at AS timestamp,
+                       toString(i.updated_at) AS timestamp,
                        i.operator_note AS note
                 ORDER BY i.updated_at DESC
                 LIMIT $limit
@@ -582,7 +582,7 @@ class Neo4jClient:
                        i.score AS score,
                        i.action_proposed AS action_proposed,
                        i.llm_summary AS llm_summary,
-                       i.updated_at AS updated_at,
+                       toString(i.updated_at) AS updated_at,
                        collect(DISTINCT e.uid) AS involved_uids,
                        collect(DISTINCT e.full_name) AS involved_names
                 ORDER BY i.updated_at ASC

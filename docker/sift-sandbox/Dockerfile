@@ -15,11 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     coreutils findutils file binutils \
     # Forensic tools
     sleuthkit \
-    volatility3 \
     tshark \
     foremost \
-    # String analysis
-    strings \
     # Python for scripting tools
     python3 python3-pip \
     # Hash tools
@@ -33,12 +30,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ── Install Python forensic packages ─────────────────────────────────────────
 RUN pip3 install --no-cache-dir \
+    volatility3 \
     analyzeMFT \
     python-registry \
     yara-python \
     pefile \
     oletools \
-    hindsight
+    pyhindsight
 
 # ── Create non-root user ─────────────────────────────────────────────────────
 RUN groupadd -r siftuser && useradd -r -g siftuser -d /home/siftuser -s /bin/bash siftuser

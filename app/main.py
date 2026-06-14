@@ -60,19 +60,29 @@ async def main() -> None:
     )
 
     # ── Telegram bot ───────────────────────────────────────────────────────────
-    bot: Bot = create_bot()
-    dp = create_dispatcher(pipeline)
-    await set_commands(bot)
+    if not settings.telegram_token:
+        log.warning("telegram_bot_disabled", reason="no_token_provided")
+        # Just keep services running
+        try:
+            await asyncio.sleep(float('inf'))
+        except KeyboardInterrupt:
+            pass
+    else:
+        bot: Bot = create_bot()
+        dp = create_dispatcher(pipeline)
+        await set_commands(bot)
 
-    log.info("bot_starting", polling=True)
-    try:
-        await dp.start_polling(bot, allowed_updates=["message"])
-    finally:
-        log.info("shutdown")
-        await agent.stop()
-        await llm.stop()
-        await neo4j.close()
-        await bot.session.close()
+        log.info("bot_starting", polling=True)
+        try:
+            await dp.start_polling(bot, allowed_updates=["message"])
+        finally:
+            await bot.session.close()
+    
+    # Cleanup
+    log.info("shutdown")
+    await agent.stop()
+    await llm.stop()
+    await neo4j.close()
 
 
 if __name__ == "__main__":

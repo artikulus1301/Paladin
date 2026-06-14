@@ -21,40 +21,24 @@ services:
       timeout: 10s
       retries: 10
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: rag_ollama
+  postgres:
+    image: postgres:16-alpine
+    container_name: rag_postgres
     restart: unless-stopped
     ports:
-      - "11435:11434"
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: paladin
+      POSTGRES_PASSWORD: paladin
+      POSTGRES_DB: paladin_archive
     volumes:
-      - ollama_models:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "test", "-S", "/dev/tcp/localhost/11434"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "pg_isready -U paladin"]
+      interval: 10s
+      timeout: 5s
       retries: 5
 
-  ollama-init:
-    image: curlimages/curl:latest
-    container_name: rag_ollama_init
-    depends_on:
-      ollama:
-        condition: service_healthy
-    entrypoint: >
-      sh -c "
-        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen3.5:9b\"}' &&
-        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"nomic-embed-text\"}' &&
-        echo 'Models pulled successfully'
-      "
-    restart: "no"
 
   bot:
     build:
@@ -65,14 +49,14 @@ services:
     depends_on:
       neo4j:
         condition: service_healthy
-      ollama:
+      postgres:
         condition: service_healthy
     environment:
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_TOKEN=8765883824:AAH19zdj1sRpjUvNc8S4VGbBYRQ5vdMQijA
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme123}
-      - OLLAMA_BASE_URL=http://ollama:11435
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5:9b}
       - SEARXNG_URL=${SEARXNG_URL:-https://searx.be}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -107,5 +91,5 @@ services:
 volumes:
   neo4j_data:
   neo4j_logs:
-  ollama_models:
+  postgres_data:
   bot_logs:

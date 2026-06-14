@@ -45,7 +45,7 @@ def main():
     for i in range(30):
         try:
             r = requests.get(f"{API}/status", timeout=2, verify=False)
-            if r.status_code in [200, 401]: # 401 means API is up but needs auth
+            if r.status_code in [200, 401, 403]: # 401/403 means API is up but needs auth
                 break
         except Exception:
             pass

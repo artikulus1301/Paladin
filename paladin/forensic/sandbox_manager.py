@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import time
 from typing import Optional
 
@@ -87,13 +88,8 @@ class SandboxManager:
             "sleep", "infinity",
         ]
 
-        try:
-            # Ensure output directory exists
-            await self._run_cmd(["docker", "run", "--rm", "-v",
-                                 f"{output_path}:/out", "alpine",
-                                 "sh", "-c", "mkdir -p /out"])
-        except Exception:
-            pass  # May already exist or docker may handle it
+        # Ensure output directory exists on the host (not via docker)
+        os.makedirs(output_path, exist_ok=True)
 
         # Create container
         result = await self._run_cmd(cmd)
@@ -231,14 +227,18 @@ class SandboxManager:
         return hashlib.sha256(output.encode("utf-8")).hexdigest()
 
     @staticmethod
-    async def _run_cmd(cmd: list[str]) -> str:
-        """Run a host command and return stdout."""
+    async def _run_cmd(cmd: list[str], timeout: int = 30) -> str:
+        """Run a host command and return stdout. Raises on failure or timeout."""
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"Docker command timed out after {timeout}s: {' '.join(cmd[:4])}")
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace")
             raise RuntimeError(

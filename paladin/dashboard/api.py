@@ -31,6 +31,7 @@ _connected_ws: list[WebSocket] = []
 _auto_exec = None
 _forensic_plan_mgr = None
 _hallucination_tracker = None
+_demo_started = False
 
 
 def init_dashboard(neo4j_client, event_bus: asyncio.Queue, auto_exec=None,
@@ -148,6 +149,20 @@ async def trigger_scenario(req: ScenarioRequest, user: dict = Depends(verify_tok
     return {"ok": True, "scenario": req.scenario}
 
 
+# ── Demo Start Trigger ────────────────────────────────────────────────────────
+
+@app.post("/api/demo/start")
+async def start_demo(user: dict = Depends(verify_token)):
+    global _demo_started
+    _demo_started = True
+    # Broadcast to websocket that demo started
+    await _broadcast({
+        "type": "demo_started",
+        "message": "The showcase demo has been triggered."
+    })
+    return {"ok": True, "demo_started": True}
+
+
 # ── Mode Toggle ───────────────────────────────────────────────────────────────
 
 class ModeRequest(BaseModel):
@@ -185,6 +200,7 @@ async def system_status(user: dict = Depends(verify_token)):
         "neo4j": "online" if neo4j_ok else "offline",
         "websocket_clients": len(_connected_ws),
         "forensic_enabled": _forensic_plan_mgr is not None,
+        "demo_started": _demo_started,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -35,11 +35,12 @@ class OllamaClient:
             "prompt": prompt,
             "system": system or "",
             "stream": False,
+            "think": False,   # Disable Qwen3 chain-of-thought reasoning (massive speedup)
             "options": {
                 "temperature": 0.3,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "num_ctx": 8192,
+                "num_ctx": 4096,
             },
         }
         url = f"{settings.ollama_base_url}/api/generate"
@@ -54,7 +55,8 @@ class OllamaClient:
             "prompt": prompt,
             "system": system or "",
             "stream": True,
-            "options": {"temperature": 0.3, "top_p": 0.9, "num_ctx": 8192},
+            "think": False,   # Disable Qwen3 chain-of-thought reasoning
+            "options": {"temperature": 0.3, "top_p": 0.9, "num_ctx": 4096},
         }
         url = f"{settings.ollama_base_url}/api/generate"
         async with self._session.post(url, json=payload) as resp:
