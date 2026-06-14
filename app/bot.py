@@ -44,12 +44,12 @@ class AccessMiddleware:
 async def cmd_start(msg: Message) -> None:
     await msg.answer(
         f"👋 {hbold('RAG Knowledge Bot')}\n\n"
-        "Задайте любой вопрос — я найду информацию в интернете, "
-        "сохраню знания в граф Neo4j и верифицирую ответ.\n\n"
-        f"{hbold('Команды:')}\n"
-        "/start — это сообщение\n"
-        "/status — статус компонентов\n"
-        "/clear — очистить историю верификатора\n",
+        "Ask any question — I will find information on the web, "
+        "save the knowledge in a Neo4j graph, and verify the answer.\n\n"
+        f"{hbold('Commands:')}\n"
+        "/start — this help message\n"
+        "/status — status of system components\n"
+        "/clear — clear verifier history\n",
         parse_mode=ParseMode.HTML,
     )
 
@@ -90,7 +90,7 @@ async def handle_query(msg: Message, pipeline: RAGPipeline) -> None:
     query = msg.text.strip()
 
     if len(query) < 3:
-        await msg.answer("Пожалуйста, введите более развёрнутый запрос.")
+        await msg.answer("Please enter a more detailed query.")
         return
 
     log.info("user_query", user_id=user_id, query=query[:80])
@@ -100,8 +100,8 @@ async def handle_query(msg: Message, pipeline: RAGPipeline) -> None:
 
     # Show progress message
     progress_msg = await msg.answer(
-        "🔍 Анализирую запрос...\n"
-        "⏳ Ищу в знаниях и интернете..."
+        "🔍 Analyzing query...\n"
+        "⏳ Searching in knowledge base and web..."
     )
 
     try:
@@ -110,7 +110,7 @@ async def handle_query(msg: Message, pipeline: RAGPipeline) -> None:
     except Exception as exc:
         log.exception("pipeline_error", error=str(exc))
         await progress_msg.edit_text(
-            f"❌ Произошла ошибка при обработке запроса.\n"
+            f"❌ An error occurred while processing the request.\n"
             f"<code>{html.escape(str(exc)[:200])}</code>",
             parse_mode=ParseMode.HTML,
         )
@@ -124,15 +124,15 @@ async def _send_result(
     # Build footer
     badges = []
     if result.used_graph:
-        badges.append("🗃 Граф")
+        badges.append("🗃 Graph")
     if result.used_internet:
-        badges.append("🌐 Интернет")
+        badges.append("🌐 Web")
     if result.fallback_used:
         badges.append("⚠️ Fallback")
     if result.verification.passed:
-        badges.append("✅ Верифицирован")
+        badges.append("✅ Verified")
     else:
-        badges.append("⚠️ Не верифицирован")
+        badges.append("⚠️ Unverified")
 
     footer = "  ·  ".join(badges)
 
@@ -175,8 +175,8 @@ def create_dispatcher(pipeline: RAGPipeline) -> Dispatcher:
 
 async def set_commands(bot: Bot) -> None:
     cmds = [
-        BotCommand(command="start", description="Приветствие и помощь"),
-        BotCommand(command="status", description="Статус компонентов"),
-        BotCommand(command="clear", description="Очистить историю верификатора"),
+        BotCommand(command="start", description="Welcome and help message"),
+        BotCommand(command="status", description="Status of components"),
+        BotCommand(command="clear", description="Clear verifier history"),
     ]
     await bot.set_my_commands(cmds, scope=BotCommandScopeDefault())

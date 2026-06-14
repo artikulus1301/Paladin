@@ -1,23 +1,23 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║        ⛨  PALADIN v2.0 — ПОЛНЫЙ ДЕМОНСТРАЦИОННЫЙ СКРИПТ                   ║
-║        Комплексное демо всех возможностей системы для видеозаписи           ║
+║        ⛨  PALADIN v2.0 — FULL DEMONSTRATION SHOWCASE SCRIPT                  ║
+║        Comprehensive demo of all system capabilities for video recording      ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-ПОКРЫТИЕ ВОЗМОЖНОСТЕЙ:
-  Layer 1 — Data Ingestion   : Logs / Emails / Chat / Calls (14 сценариев)
+CAPABILITIES COVERED:
+  Layer 1 — Data Ingestion   : Logs / Emails / Chat / Calls (14 scenarios)
   Layer 2 — SAP Core         : MorphoParser, GraphEnricher, Correlator
   Layer 3 — LLM & Verifier   : Qwen 3.5:9B + ActionVerifier
-  Layer 4 — Auto-Executor    : Autonomous режим (timeout=0)
-  Layer 5 — Forensic v2.0   : SandboxManager, MCP Server, PlanManager,
+  Layer 4 — Auto-Executor    : Autonomous mode (timeout=0)
+  Layer 5 — Forensic v2.0    : SandboxManager, MCP Server, PlanManager,
                                CorrelationEngine, HallucinationTracker
   Layer 6 — Dashboard        : FastAPI + WebSocket + JWT
 
-ИСПОЛЬЗОВАНИЕ:
+USAGE:
   python demo_full_showcase.py [--phase PHASE] [--timeout SECS]
 
   --phase: all | ingestion | sap | llm | autonomous | forensic | dashboard
-  --timeout: оператор timeout в секундах (default=5, для авто-демо)
+  --timeout: operator timeout in seconds (default=5, for auto-demo)
 """
 from __future__ import annotations
 
@@ -36,13 +36,13 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ── Путь к файлам улик Натали Романофф ────────────────────────────────────────
+# ── Path to Natalie Romanoff evidence files ──────────────────────────────────
 EVIDENCE_PATH = r"c:\Users\Lenovo\Downloads\win7-32-nromanoff-10.3.58.5"
 
 DASHBOARD_URL = "https://localhost:8888"
 API = DASHBOARD_URL + "/api"
 
-# ── Цветовая палитра для терминала ────────────────────────────────────────────
+# ── Terminal Color Palette ───────────────────────────────────────────────────
 class C:
     RESET   = "\033[0m"
     BOLD    = "\033[1m"
@@ -58,7 +58,7 @@ class C:
     BG_BLUE = "\033[44m"
 
 
-# ── Утилиты форматирования ────────────────────────────────────────────────────
+# ── Formatting Utilities ─────────────────────────────────────────────────────
 
 def banner(text: str, color: str = C.CYAN) -> None:
     width = 78
@@ -98,13 +98,13 @@ def step(msg: str, status: str = "info") -> None:
 
 def pause(secs: float, label: str = "") -> None:
     if label:
-        print(f"  {C.DIM}  ⏱  {label} ({secs:.0f}с)...{C.RESET}", end="", flush=True)
+        print(f"  {C.DIM}  ⏱  {label} ({secs:.0f}s)...{C.RESET}", end="", flush=True)
     time.sleep(secs)
     if label:
-        print(f" {C.GREEN}готово{C.RESET}")
+        print(f" {C.GREEN}done{C.RESET}")
 
 
-# ── Системные проверки ────────────────────────────────────────────────────────
+# ── System Checks ────────────────────────────────────────────────────────────
 
 def check_port(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -113,23 +113,23 @@ def check_port(port: int) -> bool:
 
 
 def detect_ollama() -> str:
-    """Определить порт активного Ollama."""
+    """Detect active Ollama port."""
     for port in [11434, 11435]:
         try:
             r = requests.get(f"http://localhost:{port}/api/tags", timeout=2)
             if r.status_code == 200:
                 models = [m["name"] for m in r.json().get("models", [])]
-                step(f"Ollama найден на порту {port}. Модели: {', '.join(models[:3])}", "ok")
+                step(f"Ollama found on port {port}. Models: {', '.join(models[:3])}", "ok")
                 return f"http://localhost:{port}"
         except Exception:
             pass
-    step("Ollama не найден! Убедитесь, что приложение запущено.", "error")
+    step("Ollama not found! Please ensure it is running.", "error")
     return "http://localhost:11434"
 
 
 def preflight_checks() -> dict:
-    """Предполётная проверка всех сервисов."""
-    section("ПРЕДПОЛЁТНЫЕ ПРОВЕРКИ", "🔍", C.YELLOW)
+    """Preflight check of all services."""
+    section("PREFLIGHT CHECKS", "🔍", C.YELLOW)
     results = {}
 
     # Ollama
@@ -140,12 +140,12 @@ def preflight_checks() -> dict:
     # Neo4j
     neo4j_ok = check_port(7687)
     results["neo4j_ok"] = neo4j_ok
-    step(f"Neo4j Bolt (7687): {'работает' if neo4j_ok else 'НЕ ЗАПУЩЕН'}", "ok" if neo4j_ok else "warn")
+    step(f"Neo4j Bolt (7687): {'ONLINE' if neo4j_ok else 'NOT RUNNING'}", "ok" if neo4j_ok else "warn")
 
     # PostgreSQL
     pg_ok = check_port(5432)
     results["pg_ok"] = pg_ok
-    step(f"PostgreSQL (5432): {'работает' if pg_ok else 'не запущен (forensic без PG)'}", "ok" if pg_ok else "warn")
+    step(f"PostgreSQL (5432): {'ONLINE' if pg_ok else 'NOT RUNNING (forensics will run without PG)'}", "ok" if pg_ok else "warn")
 
     # Docker
     try:
@@ -154,24 +154,24 @@ def preflight_checks() -> dict:
     except Exception:
         docker_ok = False
     results["docker_ok"] = docker_ok
-    step(f"Docker: {'работает' if docker_ok else 'НЕ ЗАПУЩЕН (forensic sandbox будет пропущен)'}", "ok" if docker_ok else "warn")
+    step(f"Docker: {'ONLINE' if docker_ok else 'NOT RUNNING (forensic sandbox will be skipped)'}", "ok" if docker_ok else "warn")
 
     # Evidence files
     ev_ok = os.path.exists(EVIDENCE_PATH)
     results["evidence_ok"] = ev_ok
     if ev_ok:
         file_count = sum(1 for _ in __import__("pathlib").Path(EVIDENCE_PATH).rglob("*") if _.is_file())
-        step(f"Улики nromanoff: {file_count} файлов в {EVIDENCE_PATH}", "ok")
+        step(f"Natalie Romanoff Evidence: {file_count} files found in {EVIDENCE_PATH}", "ok")
     else:
-        step(f"Папка улик не найдена: {EVIDENCE_PATH}", "warn")
+        step(f"Evidence folder not found: {EVIDENCE_PATH}", "warn")
 
     return results
 
 
-# ── Запуск Paladin ────────────────────────────────────────────────────────────
+# ── Launch Paladin ───────────────────────────────────────────────────────────
 
 def start_paladin(ollama_url: str, operator_timeout: int) -> subprocess.Popen:
-    """Запустить главный процесс Paladin."""
+    """Start the main Paladin process."""
     env = os.environ.copy()
     env["PYTHONPATH"] = "."
     env["PYTHONUTF8"] = "1"
@@ -181,8 +181,8 @@ def start_paladin(ollama_url: str, operator_timeout: int) -> subprocess.Popen:
     env["FORENSIC_ENABLED"] = "true"
     env["FORENSIC_EVIDENCE_BASE"] = EVIDENCE_PATH
     env["PALADIN_MODE"] = "dummy"
-    env["LOG_LEVEL"] = "WARNING"   # Только важные события в stdout оркестратора
-    env["TELEGRAM_TOKEN"] = ""     # Отключаем Telegram бота во время демо, чтобы избежать ошибки валидации токена
+    env["LOG_LEVEL"] = "WARNING"   # Only warnings/errors in stdout
+    env["TELEGRAM_TOKEN"] = ""     # Disable telegram bot to avoid validation errors
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "paladin.main"],
@@ -195,84 +195,84 @@ def start_paladin(ollama_url: str, operator_timeout: int) -> subprocess.Popen:
 
 
 def wait_for_api(timeout_sec: int = 60) -> str | None:
-    """Ждать готовности API и вернуть токен JWT."""
-    step("Ожидание запуска API...", "wait")
+    """Wait for Paladin API readiness and retrieve JWT token."""
+    step("Waiting for Paladin API...", "wait")
     for i in range(timeout_sec // 2):
         try:
             r = requests.get(f"{API}/status", timeout=2, verify=False)
             if r.status_code in (200, 401, 403):
-                step("Paladin API готов!", "ok")
+                step("Paladin API is ready!", "ok")
                 break
         except Exception:
             pass
         time.sleep(2)
-        print(f"    {C.DIM}... ({i*2+2}/{timeout_sec}с){C.RESET}", end="\r")
+        print(f"    {C.DIM}... ({i*2+2}/{timeout_sec}s){C.RESET}", end="\r")
     else:
-        step("Не удалось подключиться к API.", "error")
+        step("Failed to connect to API.", "error")
         return None
 
-    # Логин
+    # Login
     try:
         r = requests.post(f"{API}/login",
                           json={"username": "admin", "password": "admin"},
                           verify=False, timeout=5)
         if r.ok:
             token = r.json()["access_token"]
-            step(f"JWT получен: {token[:20]}...", "ok")
+            step(f"JWT Token acquired: {token[:20]}...", "ok")
             return token
     except Exception as e:
-        step(f"Ошибка логина: {e}", "error")
+        step(f"Login failed: {e}", "error")
     return None
 
 
 def wait_for_demo_start(token: str) -> None:
-    """Ждать сигнала старта из дэшборда."""
-    banner("ОЖИДАНИЕ ЗАПУСКА ДЕМО ИЗ ДЭШБОРДА", C.MAGENTA)
-    print(f"  {C.MAGENTA}Откройте {C.CYAN}{DASHBOARD_URL}{C.MAGENTA} и нажмите кнопку 'Start Showcase'.{C.RESET}")
+    """Wait for start trigger signal from dashboard."""
+    banner("AWAITING DEMO START FROM DASHBOARD", C.MAGENTA)
+    print(f"  {C.MAGENTA}Please open {C.CYAN}{DASHBOARD_URL}{C.MAGENTA} and click the 'Launch Full Showcase' button.{C.RESET}")
     print()
     while True:
         try:
             r = requests.get(f"{API}/status", timeout=2, verify=False, headers={"Authorization": f"Bearer {token}"})
             if r.ok and r.json().get("demo_started", False):
-                step("Сигнал на старт получен из дэшборда!", "ok")
+                step("Demo launch signal received from dashboard!", "ok")
                 break
         except Exception:
             pass
         time.sleep(1)
 
 
-# ── Phase 1: Ingestion — все 14 сценариев ────────────────────────────────────
+# ── Phase 1: Ingestion — All 14 scenarios ────────────────────────────────────
 
 ALL_SCENARIOS = [
     # (source, scenario, label, severity_icon)
     ("logs",     "brute_force",          "🔓 Brute Force Attack (Logs)",           "🔴"),
-    ("logs",     "data_exfiltration",    "💾 Data Exfiltration (Logs)",             "🔴"),
-    ("logs",     "insider_threat",       "🕵 Insider Threat (Logs)",                "🟠"),
+    ("logs",     "data_exfiltration",    "💾 Data Exfiltration (Logs)",            "🔴"),
+    ("logs",     "insider_threat",       "🕵 Insider Threat (Logs)",               "🟠"),
     ("logs",     "privilege_escalation", "⬆️ Privilege Escalation (Logs)",          "🔴"),
-    ("emails",   "phishing",             "📧 Phishing Campaign (Email)",             "🟠"),
-    ("emails",   "data_leak_email",      "📤 Data Leak via Email",                  "🔴"),
-    ("emails",   "social_engineering",   "🎭 Social Engineering (Email)",            "🟠"),
-    ("emails",   "external_exfil",       "🌐 External Exfiltration (Email)",         "🔴"),
-    ("messages", "insider_chat",         "💬 Insider Conspiracy (Chat)",             "🟠"),
-    ("messages", "credential_sharing",   "🔑 Credential Sharing (Chat)",             "🔴"),
-    ("messages", "competitor_contact",   "🏢 Competitor Contact (Chat)",             "🟡"),
-    ("calls",    "data_theft_call",      "📞 Data Theft Call",                      "🔴"),
-    ("calls",    "insider_recruitment",  "🤝 Insider Recruitment (Call)",            "🟠"),
-    ("calls",    "bribery_call",         "💰 Bribery Attempt (Call)",               "🔴"),
+    ("emails",   "phishing",             "📧 Phishing Campaign (Email)",            "🟠"),
+    ("emails",   "data_leak_email",      "📤 Data Leak via Email",                 "🔴"),
+    ("emails",   "social_engineering",   "🎭 Social Engineering (Email)",           "🟠"),
+    ("emails",   "external_exfil",       "🌐 External Exfiltration (Email)",        "🔴"),
+    ("messages", "insider_chat",         "💬 Insider Conspiracy (Chat)",            "🟠"),
+    ("messages", "credential_sharing",   "🔑 Credential Sharing (Chat)",            "🔴"),
+    ("messages", "competitor_contact",   "🏢 Competitor Contact (Chat)",            "🟡"),
+    ("calls",    "data_theft_call",      "📞 Data Theft Call",                     "🔴"),
+    ("calls",    "insider_recruitment",  "🤝 Insider Recruitment (Call)",           "🟠"),
+    ("calls",    "bribery_call",         "💰 Bribery Attempt (Call)",              "🔴"),
 ]
 
 
 def phase_ingestion(token: str, demo_mode: bool = False) -> None:
-    """Демонстрация Layer 1: все 14 сценариев атак."""
+    """Demonstrate Layer 1: Ingesting all attack scenarios."""
     banner(
         "  LAYER 1 — DATA INGESTION\n"
-        "  Запуск всех 14 встроенных сценариев атак:\n"
+        "  Queuing all 14 built-in threat scenarios:\n"
         "  Logs / Emails / Chats / Calls",
         C.RED
     )
     headers = {"Authorization": f"Bearer {token}"}
 
-    # В demo_mode запускаем только 4 ключевых сценария для скорости
+    # Queue key scenarios in demo mode for speed, otherwise queue all
     scenarios = ALL_SCENARIOS if not demo_mode else [
         ALL_SCENARIOS[0],  # brute_force
         ALL_SCENARIOS[1],  # data_exfiltration
@@ -281,7 +281,7 @@ def phase_ingestion(token: str, demo_mode: bool = False) -> None:
     ]
 
     for source, scenario, label, icon in scenarios:
-        print(f"  {icon} Запуск сценария: {C.BOLD}{label}{C.RESET} ... ", end="", flush=True)
+        print(f"  {icon} Injecting Scenario: {C.BOLD}{label}{C.RESET} ... ", end="", flush=True)
         try:
             r = requests.post(
                 f"{API}/scenario",
@@ -289,61 +289,61 @@ def phase_ingestion(token: str, demo_mode: bool = False) -> None:
                 timeout=10, verify=False, headers=headers,
             )
             if r.status_code == 200:
-                print(C.GREEN + "✓ отправлен в очередь" + C.RESET)
+                print(C.GREEN + "✓ queued successfully" + C.RESET)
             else:
-                print(C.YELLOW + f"⚠ статус {r.status_code}" + C.RESET)
+                print(C.YELLOW + f"⚠ status {r.status_code}" + C.RESET)
         except Exception as e:
             print(C.RED + f"✗ {e}" + C.RESET)
         time.sleep(0.5)
 
-    step("Все сценарии поставлены в очередь на обработку.", "ok")
+    step("All threat scenarios successfully queued for pipeline processing.", "ok")
 
 
-# ── Phase 2: SAP Core — показ корреляции ─────────────────────────────────────
+# ── Phase 2: SAP Core — Correlation ──────────────────────────────────────────
 
 def phase_sap_demo() -> None:
-    """Объяснение работы SAP: MorphoParser + GraphEnricher + Correlator."""
+    """Show SAP logic: MorphoParser + GraphEnricher + Correlator."""
     banner(
         "  LAYER 2 — SAP CORE\n"
         "  MorphoParser → GraphEnricher → Correlator → IncidentManager\n"
-        "  Паттерны корреляции: 6 детекторов",
+        "  Correlation Patterns: 6 Active Detectors",
         C.BLUE
     )
 
     patterns = [
-        ("clearance_violation",      "+0.35", "Доступ к файлам выше уровня допуска"),
-        ("off_hours_activity",       "+0.15", "Активность в нерабочее время (00–06)"),
-        ("cross_channel_correlation","+0.40", "Аномалии сразу по нескольким каналам"),
-        ("mass_download",            "+0.50", "Скачивание более 3 файлов за 60 мин"),
-        ("external_sensitive_comms", "+0.40", "Внешние коммуникации с чувств. данными"),
-        ("brute_force",              "+0.60", "5+ неудачных попыток входа за 15 мин"),
+        ("clearance_violation",      "+0.35", "Accessing files above clearance level"),
+        ("off_hours_activity",       "+0.15", "Activity during off-work hours (00–06)"),
+        ("cross_channel_correlation","+0.40", "Anomaly detected across multiple channels"),
+        ("mass_download",            "+0.50", "Downloading >3 sensitive files in 60 min"),
+        ("external_sensitive_comms", "+0.40", "External communication containing sensitive data"),
+        ("brute_force",              "+0.60", "5+ failed login attempts within 15 min"),
     ]
 
-    section("Корреляционные паттерны", "🕸", C.CYAN)
+    section("Correlation Rules & Risk Scores", "🕸", C.CYAN)
     for name, score, desc in patterns:
         print(f"    {C.CYAN}{name:<30}{C.RESET} {C.YELLOW}{score:<8}{C.RESET} {desc}")
 
     print()
-    section("Маршрутизация по серьёзности", "⚙", C.BLUE)
+    section("Severity-Based Mitigation Routing", "⚙", C.BLUE)
     routing = [
-        ("< 0.65",  "Tool Mode",     "Быстрый inline-анализ LLM"),
-        ("≥ 0.65",  "Pipeline Mode", "Полная криминалистическая цепочка (v2.0)"),
-        ("≥ 0.70",  "INCIDENT",      "Создание инцидента + действие LLM"),
-        ("≥ 0.90",  "CRITICAL",      "Немедленная изоляция / блокировка"),
+        ("< 0.65",  "Tool Mode",     "Fast inline LLM security review"),
+        ("≥ 0.65",  "Pipeline Mode", "Full Forensic Investigation Pipeline (v2.0)"),
+        ("≥ 0.70",  "INCIDENT",      "Incident registration + action verification"),
+        ("≥ 0.90",  "CRITICAL",      "Immediate autonomous threat isolation"),
     ]
     for threshold, mode, desc in routing:
         color = C.RED if "0.90" in threshold else C.YELLOW if "0.70" in threshold else C.GREEN
         print(f"    Score {color}{threshold:<8}{C.RESET} → {C.BOLD}{mode:<16}{C.RESET} {desc}")
 
 
-# ── Phase 3: LLM + Verifier — мониторинг в реальном времени ──────────────────
+# ── Phase 3: LLM + Verifier — Real-Time Monitoring ────────────────────────────
 
 def phase_llm_monitor(token: str, watch_seconds: int = 90) -> dict:
-    """Мониторинг появления инцидентов и LLM-ответов."""
+    """Monitor incident creation and real-time LLM analysis updates."""
     banner(
         "  LAYER 3 — LLM & VERIFIER\n"
-        f"  Мониторинг {watch_seconds}с: Qwen 3.5:9B анализирует инциденты\n"
-        "  ActionVerifier: level check + protected entities + entropy/perplexity",
+        f"  Monitoring for {watch_seconds}s: Qwen 3.5:9B analyzes incidents\n"
+        "  ActionVerifier: checks level, entity protection & output perplexity",
         C.MAGENTA
     )
 
@@ -351,7 +351,7 @@ def phase_llm_monitor(token: str, watch_seconds: int = 90) -> dict:
     seen_incidents: dict[str, str] = {}  # id → stage
     found_incidents = {}
 
-    section("Ожидание инцидентов...", "👁", C.MAGENTA)
+    section("Monitoring active incidents...", "👁", C.MAGENTA)
 
     deadline = time.time() + watch_seconds
     last_dot = time.time()
@@ -370,20 +370,20 @@ def phase_llm_monitor(token: str, watch_seconds: int = 90) -> dict:
             icon_map = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
             sev_icon = icon_map.get(sev, "⚪")
 
-            # Новый инцидент
+            # New Incident Registered
             if iid not in seen_incidents:
                 seen_incidents[iid] = "new"
                 found_incidents[iid] = inc
                 score = inc.get("score", 0)
                 f_mode = inc.get("forensic_mode", "tool")
                 f_label = (C.GREEN + "⚗ PIPELINE" + C.RESET) if f_mode == "pipeline" else (C.DIM + "🔧 tool" + C.RESET)
-                print(f"\n  {sev_icon} {C.BOLD}НОВЫЙ ИНЦИДЕНТ{C.RESET} {C.CYAN}{iid}{C.RESET}")
-                print(f"     Название  : {inc.get('title', '—')}")
-                print(f"     Серьёзность: {C.BOLD}{sev}{C.RESET} | Score: {C.YELLOW}{score}{C.RESET}")
-                print(f"     Forensic   : {f_label}")
-                print(f"     Участники  : {', '.join(inc.get('involved', []))}")
+                print(f"\n  {sev_icon} {C.BOLD}NEW INCIDENT DETECTED{C.RESET} {C.CYAN}{iid}{C.RESET}")
+                print(f"     Title     : {inc.get('title', '—')}")
+                print(f"     Severity  : {C.BOLD}{sev}{C.RESET} | Score: {C.YELLOW}{score}{C.RESET}")
+                print(f"     Forensic  : {f_label}")
+                print(f"     Involved  : {', '.join(inc.get('involved', []))}")
 
-            # LLM заключение появилось
+            # LLM Analysis generated
             if inc.get("llm_summary") and seen_incidents.get(iid) == "new":
                 seen_incidents[iid] = "llm"
                 summary = (inc.get("llm_summary") or "")[:200].replace("\n", " ")
@@ -393,89 +393,89 @@ def phase_llm_monitor(token: str, watch_seconds: int = 90) -> dict:
                     "FLAG": C.YELLOW, "REVOKE_SESSIONS": C.YELLOW,
                     "NOTIFY": C.CYAN, "READ": C.DIM,
                 }.get(action, C.WHITE)
-                print(f"\n  {C.MAGENTA}🤖 LLM ОТВЕТ{C.RESET} [{iid}]")
-                print(f"     Анализ  : {summary}...")
-                print(f"     Действие: {action_color}{C.BOLD}{action}{C.RESET}")
+                print(f"\n  {C.MAGENTA}🤖 LLM DECISION{C.RESET} [{iid}]")
+                print(f"     Summary   : {summary}...")
+                print(f"     Action    : {action_color}{C.BOLD}{action}{C.RESET}")
                 if status == "pending":
-                    step(f"Статус: PENDING — ожидание оператора или auto-execute...", "wait")
+                    step(f"Status: PENDING — Awaiting operator action or auto-execution...", "wait")
 
-            # Авто-исполнение
+            # Auto-Execution triggered
             if "auto_executed" in status and seen_incidents.get(iid) not in ("auto", "manual"):
                 seen_incidents[iid] = "auto" if "timeout" in status else "manual"
                 note = (inc.get("operator_note") or "")[:120]
-                print(f"\n  {C.RED}{C.BOLD}⚡ АВТО-ИСПОЛНЕНО{C.RESET} [{iid}]")
-                print(f"     Действие: {inc.get('action_proposed', '?')}")
-                print(f"     Статус  : {status}")
-                print(f"     Примечание: {note}")
+                print(f"\n  {C.RED}{C.BOLD}⚡ AUTONOMOUS ACTION EXECUTED{C.RESET} [{iid}]")
+                print(f"     Mitigation: {inc.get('action_proposed', '?')}")
+                print(f"     Status    : {status}")
+                print(f"     Audit Note: {note}")
                 found_incidents[iid] = inc
 
-        # Прогресс-точки
+        # Periodic status updates
         if time.time() - last_dot > 5:
             last_dot = time.time()
             remaining = int(deadline - time.time())
-            print(f"  {C.DIM}  ⏱ {remaining}с до следующей фазы | инцидентов: {len(seen_incidents)}{C.RESET}")
+            print(f"  {C.DIM}  ⏱ {remaining}s remaining | Active Incidents tracked: {len(seen_incidents)}{C.RESET}")
 
         time.sleep(2)
 
-    step(f"Итого зафиксировано инцидентов: {len(seen_incidents)}", "ok")
+    step(f"Monitoring complete. Total incidents registered: {len(seen_incidents)}", "ok")
     return found_incidents
 
 
-# ── Phase 4: Autonomous Mode — демонстрация timeout ──────────────────────────
+# ── Layer 4: Autonomous Mode (Operator Timeout) ─────────────────────────────
 
 def phase_autonomous(token: str) -> None:
-    """Демонстрация автономного режима."""
+    """Demonstrate autonomous execution on timeout policy."""
     banner(
         "  LAYER 4 — AUTO-EXECUTOR\n"
-        "  Autonomous Mode: оператор timeout = 5с → немедленное исполнение\n"
-        "  Human-in-the-Loop: оператор может одобрить/отклонить вручную",
+        "  Autonomous Mode: instant auto-execute (timeout = 0s)\n"
+        "  Human-in-the-Loop Mode: 60s operator response window",
         C.YELLOW
     )
     headers = {"Authorization": f"Bearer {token}"}
 
-    section("Ручное переключение режима через API", "🔄", C.YELLOW)
+    section("Switching policy mode via API", "🔄", C.YELLOW)
 
-    # Переключить в автономный режим
+    # Change config mode to autonomous
     try:
         r = requests.post(f"{API}/config/mode",
                           json={"mode": "autonomous"},
                           timeout=5, verify=False, headers=headers)
         if r.ok:
-            step("Режим переключён: AUTONOMOUS (instant auto-execute)", "ok")
+            step("Operational policy updated: AUTONOMOUS (instant enforcement)", "ok")
         else:
-            step(f"Переключение режима: статус {r.status_code}", "warn")
+            step(f"Failed to change mode: HTTP status {r.status_code}", "warn")
     except Exception as e:
-        step(f"Ошибка переключения: {e}", "warn")
+        step(f"API Error: {e}", "warn")
 
-    # Запустить критический сценарий для демонстрации
-    step("Запуск критического сценария data_exfiltration...", "attack")
+    # Generate scenario
+    step("Simulating critical data exfiltration logs...", "attack")
     try:
         r = requests.post(f"{API}/scenario",
                           json={"scenario": "data_exfiltration", "source": "logs"},
                           timeout=10, verify=False, headers=headers)
-        step(f"Сценарий отправлен: {r.status_code}", "ok" if r.ok else "warn")
+        step(f"Exfiltration scenario injected: {r.status_code}", "ok" if r.ok else "warn")
     except Exception as e:
-        step(f"Ошибка: {e}", "error")
+        step(f"Error: {e}", "error")
 
-    pause(3, "ожидание LLM")
+    pause(3, "Waiting for LLM agent processing")
 
-    section("Статус авто-исполненных инцидентов", "⚡", C.RED)
+    section("Autonomous Enforcement Status", "⚡", C.RED)
     try:
         r = requests.get(f"{API}/incidents", timeout=5, verify=False, headers=headers)
         incidents = r.json().get("incidents", []) if r.ok else []
         auto_count = sum(1 for i in incidents if "auto_executed" in i.get("action_status", ""))
-        step(f"Авто-исполнено инцидентов: {auto_count}", "auto")
+        step(f"Total autonomously mitigated incidents: {auto_count}", "auto")
         for inc in incidents:
             if "auto_executed" in inc.get("action_status", ""):
                 print(f"    • {inc['incident_id']} | {inc.get('severity')} | {inc.get('action_proposed')} ← {inc.get('action_status')}")
     except Exception as e:
-        step(f"Ошибка запроса: {e}", "warn")
+        step(f"API Error: {e}", "warn")
 
 
-# ── Phase 5: Forensic Pipeline v2.0 ──────────────────────────────────────────
+# ── Layer 5: Forensic Pipeline v2.0 ──────────────────────────────────────────
 
 async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
-    """Демонстрация полного forensic pipeline v2.0."""
+    """Demonstrate full Forensic Investigation Pipeline v2.0."""
     banner(
         "  LAYER 5 — FORENSIC INVESTIGATION v2.0\n"
         "  Incident → ForensicPlanManager → SIFT MCP Server → Sandbox\n"
@@ -483,14 +483,14 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
         C.GREEN
     )
 
-    # Настройка окружения
+    # Configure environment
     os.environ["OLLAMA_BASE_URL"] = ollama_url
     os.environ["FORENSIC_EVIDENCE_BASE"] = EVIDENCE_PATH if use_evidence else "/tmp/demo_evidence"
     os.environ["OLLAMA_TIMEOUT"] = "600"
 
     sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-    section("Инициализация компонентов Forensic Layer", "⚙", C.GREEN)
+    section("Initializing Forensic Layer Components", "⚙", C.GREEN)
 
     try:
         from paladin.config.settings import settings
@@ -504,23 +504,23 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
         from paladin.forensic.correlation_engine import CorrelationEngine
         from paladin.forensic.hallucination_tracker import HallucinationTracker
     except ImportError as e:
-        step(f"Ошибка импорта Paladin: {e}", "error")
-        step("Убедитесь что запущено из директории проекта с PYTHONPATH=.", "warn")
+        step(f"Paladin imports failed: {e}", "error")
+        step("Ensure the script runs with PYTHONPATH=.", "warn")
         return
 
-    # Neo4j
+    # Neo4j Client setup
     neo4j = Neo4jClient()
-    step("Подключение к Neo4j...", "wait")
+    step("Connecting to Neo4j graph...", "wait")
     try:
         await neo4j.connect()
         await neo4j.seed_organization()
     except Exception as e:
-        step(f"Neo4j недоступен: {e}", "error")
-        step("Запустите: docker-compose -f docker-compose.paladin.yml up -d neo4j", "warn")
+        step(f"Neo4j is unreachable: {e}", "error")
+        step("Please run: docker-compose -f docker-compose.paladin.yml up -d neo4j", "warn")
         return
-    step("Neo4j подключён, организация инициализирована.", "ok")
+    step("Connected to Neo4j database successfully.", "ok")
 
-    # Создаём сотрудника-субъекта расследования
+    # Create investigator subject
     emp = {
         "uid": "emp-nromanoff",
         "full_name": "Natalie Romanoff",
@@ -530,27 +530,27 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
         "manager_uid": "emp-005"
     }
     await neo4j.upsert_employee(emp)
-    step(f"Субъект расследования: {emp['full_name']} ({emp['department']})", "ok")
+    step(f"Forensic subject created: {emp['full_name']} ({emp['department']})", "ok")
 
-    # LLM
+    # LLM Setup
     llm = OllamaClient()
-    step("Запуск OllamaClient...", "wait")
+    step("Initializing Ollama LLM Connection...", "wait")
     await llm.start()
-    step(f"LLM готов: Qwen 3.5:9B @ {ollama_url}", "ok")
+    step(f"LLM active: Qwen 3.5:9B @ {ollama_url}", "ok")
 
-    # Forensic компоненты
+    # Forensic structures
     verifier = ForensicActionVerifier()
     sandbox = SandboxManager()
     pg = ForensicPGStore()
 
     try:
         await pg.initialize(settings.postgres_dsn)
-        step("PostgreSQL Forensic Store инициализирован.", "ok")
+        step("PostgreSQL Forensic Audit Log active.", "ok")
     except Exception as e:
-        step(f"PG Store недоступен (memory-only режим): {e}", "warn")
+        step(f"PG Store not available (running in memory-only mode): {e}", "warn")
         pg = None
 
-    # Счётчики для статистики
+    # Performance Stats
     stats = {
         "steps_total": 0,
         "steps_done": 0,
@@ -559,15 +559,15 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
         "corrections": 0,
     }
 
-    # Callback для событий в реальном времени
+    # Live Event Broadcaster
     async def live_broadcast(event: dict) -> None:
         ev = event.get("type", "")
         if ev == "forensic_plan_created":
             stats["steps_total"] = event.get("todo_count", 0)
             print()
             step(
-                f"План создан: {event['plan_id'][:20]}... | "
-                f"Шагов расследования: {C.YELLOW}{event['todo_count']}{C.RESET}",
+                f"Forensic plan created: {event['plan_id'][:20]}... | "
+                f"Total investigation steps: {C.YELLOW}{event['todo_count']}{C.RESET}",
                 "forensic"
             )
         elif ev == "todo_item_updated":
@@ -576,12 +576,12 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
                 stats["steps_done"] += 1
                 pct = int(stats["steps_done"] / max(stats["steps_total"], 1) * 100)
                 bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
-                print(f"  {C.GREEN}  [{bar}] {pct}%{C.RESET}  Шаг {event['item_id'][:20]}... → DONE", end="\r")
+                print(f"  {C.GREEN}  [{bar}] {pct}%{C.RESET}  Step {event['item_id'][:20]}... → DONE", end="\r")
         elif ev == "finding_added":
             stats["findings"] += 1
             print()
             step(
-                f"Находка #{stats['findings']}: {event['description'][:80]} "
+                f"Finding #{stats['findings']}: {event['description'][:80]} "
                 f"(confidence={C.YELLOW}{event['confidence']}%{C.RESET})",
                 "forensic"
             )
@@ -589,15 +589,15 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
             stats["contradictions"] += 1
             print()
             step(
-                f"ПРОТИВОРЕЧИЕ #{stats['contradictions']}: "
+                f"CONTRADICTION #{stats['contradictions']}: "
                 f"{event['finding_id_a'][:15]} ↔ {event['finding_id_b'][:15]}",
                 "warn"
             )
         elif ev == "self_correction_triggered":
             stats["corrections"] += 1
             step(
-                f"Self-Correction #{stats['corrections']}: "
-                f"итерация {event['iteration_count']}/{event['max_iterations']} — {event.get('recheck_reason', '')[:60]}",
+                f"Self-Correction loop #{stats['corrections']}: "
+                f"iteration {event['iteration_count']}/{event['max_iterations']} — {event.get('recheck_reason', '')[:60]}",
                 "warn"
             )
         elif ev == "plan_completed":
@@ -605,17 +605,17 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
             hallucination_rate = event.get("hallucination_rate", 0)
             hr_color = C.RED if hallucination_rate > 0.3 else C.GREEN
             step(
-                f"РАССЛЕДОВАНИЕ ЗАВЕРШЕНО | "
-                f"Статус: {C.BOLD}{event['status']}{C.RESET} | "
-                f"Находок: {event['total_findings']} | "
+                f"FORENSIC ANALYSIS COMPLETE | "
+                f"Status: {C.BOLD}{event['status']}{C.RESET} | "
+                f"Findings: {event['total_findings']} | "
                 f"Hallucination rate: {hr_color}{hallucination_rate * 100:.1f}%{C.RESET}",
                 "ok"
             )
 
-    # Создание MCP сервера и Plan Manager
+    # Initialize MCP
     mcp = SIFTMCPServer(sandbox, verifier, pg)
 
-    section("Доступные MCP функции SIFT", "🔧", C.GREEN)
+    section("Available SIFT MCP Functions", "🔧", C.GREEN)
     mcp_funcs = mcp.get_available_functions() if hasattr(mcp, "get_available_functions") else [
         "get_file_metadata", "compute_hash", "extract_strings",
         "analyze_process_list", "scan_network_connections", "extract_loaded_modules",
@@ -631,7 +631,7 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
         broadcast_fn=live_broadcast
     )
 
-    section("Создание тестового инцидента CRITICAL", "🚨", C.RED)
+    section("Creating CRITICAL Incident in Graph DB", "🚨", C.RED)
 
     incident_id = "INC-NROMANOFF-FULLSHOWCASE"
     context = {
@@ -640,17 +640,17 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
         "severity": "CRITICAL",
         "score": 0.97,
         "description": (
-            "Критический инцидент: признаки lateral movement, кражи учётных данных "
-            "и возможного заражения вредоносным ПО на рабочей станции "
-            "Natalie Romanoff (10.3.58.5). Прилагаются дамп памяти и образ диска C:."
+            "Critical security incident: evidence of lateral movement, credential theft, "
+            "and active malware infection on Natalie Romanoff's workstation (10.3.58.5). "
+            "Memory dump and C: disk image attached."
         ),
         "involved_employees": ["emp-nromanoff"],
     }
 
-    step(f"Инцидент: {incident_id}", "attack")
-    step(f"Серьёзность: CRITICAL | Score: {context['score']}", "attack")
+    step(f"Incident: {incident_id}", "attack")
+    step(f"Severity: CRITICAL | Score: {context['score']}", "attack")
 
-    # Очистка предыдущего состояния
+    # Clear previous state
     async with neo4j._driver.session() as s:
         await s.run("MATCH (n {incident_id: $iid}) DETACH DELETE n", iid=incident_id)
         await s.run("MATCH (n {plan_id: $iid}) DETACH DELETE n", iid=incident_id)
@@ -661,14 +661,14 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
     )
 
     await neo4j.create_incident(context)
-    step("Инцидент создан в Neo4j.", "ok")
+    step("Incident created in Neo4j graph.", "ok")
 
-    section("Запуск Forensic Pipeline", "🔬", C.GREEN)
-    step("Pipeline: Sandbox → MCP → LLM Plans → Self-Correction → Correlation...", "forensic")
+    section("Running Forensic Pipeline Engine", "🔬", C.GREEN)
+    step("Pipeline: Sandbox Setup → SIFT MCP Tools → Agent Planning → Self-Correction → Correlation...", "forensic")
 
     evidence_path = EVIDENCE_PATH if os.path.exists(EVIDENCE_PATH) else None
     if not evidence_path:
-        step(f"Папка улик не найдена ({EVIDENCE_PATH}), forensic запустится без реальных файлов.", "warn")
+        step(f"Evidence folder not found ({EVIDENCE_PATH}), starting simulation mode.", "warn")
 
     try:
         plan_id = await plan_mgr.run_full_investigation(
@@ -677,7 +677,7 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
             evidence_path=evidence_path or "/tmp/empty",
         )
         print()
-        step(f"Forensic Pipeline завершён. Plan ID: {plan_id}", "ok")
+        step(f"Forensic Pipeline complete. Plan ID: {plan_id}", "ok")
 
         # ── Correlation Engine ───────────────────────────────────────────────
         section("Correlation Engine — Cross-Source Detection", "🔀", C.CYAN)
@@ -688,9 +688,9 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
                 for corr in correlations:
                     print(f"    • {C.YELLOW}{corr.get('type', '?')}{C.RESET}: {corr.get('description', '')[:80]}")
             else:
-                step("Противоречий между источниками не найдено.", "ok")
+                step("No cross-source discrepancies found.", "ok")
         except Exception as e:
-            step(f"Correlation Engine: {e}", "warn")
+            step(f"Correlation Engine failed: {e}", "warn")
 
         # ── Hallucination Tracker ────────────────────────────────────────────
         section("Hallucination Tracker — Accuracy Report", "🎯", C.MAGENTA)
@@ -702,34 +702,34 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
             hr = report.get("hallucination_rate", 0.0)
             hr_color = C.RED if hr > 0.3 else C.YELLOW if hr > 0.1 else C.GREEN
 
-            print(f"    Всего находок    : {total}")
-            print(f"    Верифицированных : {C.GREEN}{verified}{C.RESET}")
+            print(f"    Total Findings   : {total}")
+            print(f"    Verified Findings: {C.GREEN}{verified}{C.RESET}")
             print(f"    Hallucination    : {hr_color}{hr * 100:.1f}%{C.RESET}")
-            print(f"    Метод верификации: exact / case-insensitive / semantic (70%+ overlap)")
+            print(f"    Verification mode: exact / case-insensitive / semantic (70%+ overlap)")
         except Exception as e:
-            step(f"Hallucination Tracker: {e}", "warn")
+            step(f"Hallucination Tracker failed: {e}", "warn")
 
     except Exception as e:
-        step(f"Ошибка forensic pipeline: {e}", "error")
+        step(f"Forensic Pipeline error: {e}", "error")
         import traceback
         traceback.print_exc()
 
     await llm.stop()
     await neo4j.close()
 
-    # Итоговая статистика
-    section("Forensic Summary", "📊", C.GREEN)
-    print(f"    Шагов расследования : {stats['steps_total']}")
-    print(f"    Выполнено шагов     : {stats['steps_done']}")
-    print(f"    Находок             : {stats['findings']}")
-    print(f"    Противоречий        : {stats['contradictions']}")
-    print(f"    Self-corrections    : {stats['corrections']}")
+    # Final summary statistics
+    section("Forensic Investigation Summary", "📊", C.GREEN)
+    print(f"    Total Planned Steps : {stats['steps_total']}")
+    print(f"    Completed Steps     : {stats['steps_done']}")
+    print(f"    Extracted Findings  : {stats['findings']}")
+    print(f"    Plan Contradictions : {stats['contradictions']}")
+    print(f"    Self-Corrections    : {stats['corrections']}")
 
 
-# ── Phase 6: Dashboard — демонстрация API ─────────────────────────────────────
+# ── Phase 6: Dashboard & REST APIs ───────────────────────────────────────────
 
 def phase_dashboard(token: str) -> None:
-    """Демонстрация всех API endpoints."""
+    """Test and show all FastAPI REST endpoints."""
     banner(
         "  LAYER 6 — DASHBOARD & API\n"
         f"  {DASHBOARD_URL}\n"
@@ -746,7 +746,7 @@ def phase_dashboard(token: str) -> None:
         ("POST", "/api/scenario",            "Trigger Test Scenario"),
     ]
 
-    section("Проверка API Endpoints", "🌐", C.CYAN)
+    section("Testing API Endpoints", "🌐", C.CYAN)
     for method, endpoint, desc in endpoints:
         url = DASHBOARD_URL + endpoint
         try:
@@ -759,20 +759,20 @@ def phase_dashboard(token: str) -> None:
         except Exception as e:
             print(f"  {C.DIM}  ✗ {method:<4} {endpoint:<35} Error: {str(e)[:40]}{C.RESET}")
 
-    section("WebSocket Real-Time Stream", "📡", C.CYAN)
+    section("WebSocket Real-Time Event Stream", "📡", C.CYAN)
     step(f"WebSocket endpoint: wss://localhost:8888/ws", "ok")
-    step("Поддерживаемые типы событий:", "info")
+    step("Supported live event types:", "info")
     ws_events = [
-        "incident_created     — новый инцидент зафиксирован",
-        "incident_updated     — LLM завершил анализ",
-        "auto_executed        — действие автономно исполнено",
-        "forensic_plan_*      — обновления криминалистического плана",
-        "finding_added        — новая криминалистическая находка",
+        "incident_created     — new security incident triggered",
+        "incident_updated     — LLM analysis/summary update complete",
+        "auto_executed        — autonomous action enforced by policy",
+        "forensic_plan_*      — forensic workflow planning events",
+        "finding_added        — new artifact discovery reported",
     ]
     for ev in ws_events:
         print(f"      • {C.CYAN}{ev}{C.RESET}")
 
-    section("Forensic API Endpoints (v2.0)", "🔬", C.GREEN)
+    section("Forensic endpoints (v2.0)", "🔬", C.GREEN)
     forensic_endpoints = [
         ("GET",  "/api/forensic/plan/{plan_id}",             "ForensicPlan + TodoItems + Findings"),
         ("GET",  "/api/forensic/incident/{incident_id}",     "Plan for Incident"),
@@ -783,93 +783,93 @@ def phase_dashboard(token: str) -> None:
         print(f"  {C.GREEN}✓{C.RESET} {method:<4} {endpoint:<45} {C.DIM}{desc}{C.RESET}")
 
     print()
-    step(f"Dashboard доступен по адресу: {C.CYAN}{DASHBOARD_URL}{C.RESET}", "ok")
+    step(f"Dashboard UI available at: {C.CYAN}{DASHBOARD_URL}{C.RESET}", "ok")
     step("Credentials: admin / admin", "info")
 
 
-# ── Phase 7: Security Architecture — 4 границы защиты ───────────────────────
+# ── Phase 7: Security Architecture ───────────────────────────────────────────
 
 def phase_security_architecture() -> None:
-    """Демонстрация архитектуры безопасности."""
+    """Display defense in depth design schema."""
     banner(
         "  SECURITY ARCHITECTURE — DEFENSE IN DEPTH\n"
-        "  4 слоя защиты Forensic Layer",
+        "  4 Protection Boundaries of the Forensic Layer",
         C.RED
     )
 
     boundaries = [
         (
             "#1 ForensicActionVerifier",
-            "Программный фильтр",
-            ["SAFE / REQUIRES_APPROVAL / FORBIDDEN классификация",
-             "Обнаружение Shell-инъекций: ; && | ` $()",
-             "Предотвращение Path Traversal (../)",
-             "Default-Deny политика"]
+            "Command Filtering",
+            ["SAFE / REQUIRES_APPROVAL / FORBIDDEN verification matrix",
+             "Shell injection detection: ; && | ` $()",
+             "Path traversal prevention (../)",
+             "Default-Deny policy engine"]
         ),
         (
             "#2 MCP Server API Surface",
-            "Ограничение поверхности атаки",
-            ["Только 11 read-only функций",
-             "Нет rm, dd, chmod, mkfs, shell-доступа",
-             "Строго типизированные Pydantic модели",
-             "LLM никогда не получает сырой shell-вывод"]
+            "Surface Area Limitation",
+            ["Exactly 11 read-only capabilities exposed",
+             "No rm, dd, chmod, write or shell execution commands",
+             "Strict Pydantic type validation",
+             "LLM never interacts with a raw system shell"]
         ),
         (
             "#3 Sandbox Filesystem",
-            "Изоляция на уровне ядра",
-            ["/evidence монтируется с флагом :ro",
-             "OS-уровневый запрет записи",
-             "--read-only контейнер",
-             "tmpfs для временных файлов"]
+            "Kernel-Level Isolation",
+            ["/evidence volume mounted with :ro flag (Read-Only)",
+             "OS-level write protection",
+             "Strictly --read-only docker run config",
+             "Minimal tmpfs for volatile scratch space"]
         ),
         (
             "#4 Sandbox Network",
-            "Сетевая изоляция Docker",
-            ["network: none — нет входящих/исходящих",
-             "Нет DNS, нет C2 эксфильтрации",
+            "Docker Network Isolation",
+            ["network: none — complete inbound & outbound block",
+             "No DNS, preventing C2 data exfiltration",
              "--cap-drop ALL",
-             "--pids-limit 256, CPU/RAM лимиты"]
+             "--pids-limit 256, strictly configured CPU/RAM limits"]
         ),
     ]
 
     for boundary, mechanism, details in boundaries:
-        print(f"\n  {C.RED}┌─ Граница {boundary}{C.RESET}")
-        print(f"  {C.RED}│{C.RESET}  Механизм: {C.YELLOW}{mechanism}{C.RESET}")
+        print(f"\n  {C.RED}┌─ Boundary {boundary}{C.RESET}")
+        print(f"  {C.RED}│{C.RESET}  Mechanism: {C.YELLOW}{mechanism}{C.RESET}")
         for d in details:
             print(f"  {C.RED}│{C.RESET}  • {d}")
         print(f"  {C.RED}└{'─' * 60}{C.RESET}")
 
 
-# ── Phase 8: Neo4j Graph Schema ───────────────────────────────────────────────
+# ── Phase 8: Neo4j Graph Schema ──────────────────────────────────────────────
 
 def phase_graph_schema() -> None:
-    """Демонстрация схемы графа Neo4j."""
+    """Show the Neo4j schema definitions."""
     banner(
         "  NEO4J GRAPH SCHEMA\n"
-        "  16 типов узлов, 25+ типов рёбер",
+        "  16 Nodes, 25+ Relationship types",
         C.CYAN
     )
 
     node_labels = [
-        ("Employee",       "Core", "Сотрудник: UID, dept, clearance"),
-        ("Device",         "Core", "Рабочая станция, сервер"),
-        ("File",           "Core", "Файловые артефакты"),
-        ("IPAddress",      "Core", "IP-адреса (внутренние/внешние)"),
-        ("Email",          "Core", "Корпоративные письма"),
-        ("Message",        "Core", "Сообщения в мессенджерах"),
-        ("Call",           "Core", "Транскрипты звонков"),
-        ("LogEvent",       "Core", "Системные/app логи"),
-        ("Incident",       "Core", "Коррелированные инциденты"),
-        ("Department",     "Org",  "Подразделения компании"),
-        ("Role",           "Org",  "Должности"),
-        ("ClearanceLevel", "Org",  "Уровни допуска"),
-        ("ForensicPlan",   "Forensic", "План расследования v2.0"),
-        ("TodoItem",       "Forensic", "Шаг расследования"),
-        ("Finding",        "Forensic", "Криминалистическая находка"),
-        ("ToolExecution",  "Forensic", "Лог выполнения MCP-инструмента"),
+        ("Employee",       "Core", "User entities: UID, department, clearance"),
+        ("Device",         "Core", "Hosts, workstations, server resources"),
+        ("File",           "Core", "File path artifacts"),
+        ("IPAddress",      "Core", "Network IP entities (internal/external)"),
+        ("Email",          "Core", "Corporate emails"),
+        ("Message",        "Core", "Chat messenger conversations"),
+        ("Call",           "Core", "Voice transcript logs"),
+        ("LogEvent",       "Core", "System audit and application events"),
+        ("Incident",       "Core", "Correlated anomalies"),
+        ("Department",     "Org",  "Org structure nodes"),
+        ("Role",           "Org",  "Employee roles"),
+        ("ClearanceLevel", "Org",  "Clearance tiers"),
+        ("ForensicPlan",   "Forensic", "Plan details (v2.0)"),
+        ("TodoItem",       "Forensic", "Planned investigation steps"),
+        ("Finding",        "Forensic", "Extracted evidence discoveries"),
+        ("ToolExecution",  "Forensic", "SIFT MCP execution logs"),
     ]
 
-    section("Узлы (Node Labels)", "🔵", C.CYAN)
+    section("Node Labels", "🔵", C.CYAN)
     for label, domain, desc in node_labels:
         domain_color = C.CYAN if domain == "Core" else C.YELLOW if domain == "Org" else C.GREEN
         print(f"    {domain_color}{label:<20}{C.RESET} [{domain:<8}] {desc}")
@@ -885,60 +885,60 @@ def phase_graph_schema() -> None:
         ("HAS_VERSION",       "ForensicPlan → ForensicPlan (snapshot)"),
     ]
 
-    section("Ключевые рёбра (Relationships)", "🔗", C.CYAN)
+    section("Key Relationships", "🔗", C.CYAN)
     for rel, connects in key_rels:
         print(f"    {C.YELLOW}[:{rel}]{C.RESET:<35} {connects}")
 
 
-# ── Главная функция ───────────────────────────────────────────────────────────
+# ── Main Entry Point ─────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Paladin v2.0 — Полный демонстрационный скрипт"
+        description="Paladin v2.0 — Full Demonstration and Showcase CLI"
     )
     parser.add_argument(
         "--phase",
         choices=["all", "checks", "ingestion", "sap", "llm", "autonomous",
                  "forensic", "dashboard", "security", "schema"],
         default="all",
-        help="Какую фазу запустить (default: all)"
+        help="Demonstration phase to run (default: all)"
     )
     parser.add_argument(
         "--timeout",
         type=int, default=5,
-        help="Operator timeout в секундах (default=5 для авто-демо)"
+        help="Operator response timeout in seconds (default=5)"
     )
     parser.add_argument(
         "--watch",
         type=int, default=90,
-        help="Сколько секунд мониторить инциденты в фазе LLM (default=90)"
+        help="Incident monitoring window duration in seconds (default=90)"
     )
     parser.add_argument(
         "--no-start",
         action="store_true",
-        help="Не запускать Paladin (уже запущен)"
+        help="Do not start Paladin service (connect to already running service)"
     )
     parser.add_argument(
         "--no-forensic",
         action="store_true",
-        help="Пропустить forensic pipeline (долгое ожидание LLM)"
+        help="Skip the long forensic pipeline demo (saves LLM response waiting time)"
     )
     args = parser.parse_args()
 
-    # ── Заставка ──────────────────────────────────────────────────────────────
+    # Title
     banner(
         f"  ⛨  PALADIN v2.0 — AUTONOMOUS CORPORATE SECURITY SYSTEM\n"
-        f"  Полный демонстрационный скрипт для видеозаписи\n"
-        f"  Фаза: {args.phase.upper()} | Operator Timeout: {args.timeout}s\n"
+        f"  Comprehensive Showcase Script\n"
+        f"  Phase: {args.phase.upper()} | Operator Timeout: {args.timeout}s\n"
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         C.CYAN
     )
 
-    # ── Предполётные проверки ─────────────────────────────────────────────────
+    # Preflight Checks
     checks = preflight_checks()
     ollama_url = checks["ollama_url"]
 
-    # ── Только schema / sap / security — не нужен запущенный Paladin ─────────
+    # Standalone phases (no active Paladin daemon required)
     standalone_phases = {"sap", "security", "schema"}
 
     if args.phase in standalone_phases:
@@ -950,42 +950,40 @@ def main():
             phase_graph_schema()
         return
 
-    # ── Forensic-only фаза ────────────────────────────────────────────────────
+    # Forensic phase
     if args.phase == "forensic":
         if not args.no_forensic:
             asyncio.run(phase_forensic(ollama_url))
         else:
-            step("Forensic фаза пропущена (--no-forensic).", "warn")
+            step("Forensic pipeline phase skipped (--no-forensic).", "warn")
         return
 
-    # ── Запуск Paladin ────────────────────────────────────────────────────────
+    # Daemon orchestration
     paladin_proc = None
     token = None
 
     if not args.no_start:
-        section("Запуск Paladin Orchestrator", "🚀", C.GREEN)
+        section("Starting Paladin Orchestrator Service", "🚀", C.GREEN)
         paladin_proc = start_paladin(ollama_url, args.timeout)
-        step(f"Paladin запущен (PID={paladin_proc.pid})", "ok")
+        step(f"Paladin process started (PID={paladin_proc.pid})", "ok")
         token = wait_for_api(timeout_sec=60)
         if not token:
-            step("Не удалось получить токен. Завершение.", "error")
+            step("Failed to retrieve operational token. Exiting.", "error")
             if paladin_proc:
                 paladin_proc.terminate()
             sys.exit(1)
         wait_for_demo_start(token)
     else:
-        # Уже запущен — просто логинимся
-        section("Подключение к уже запущенному Paladin", "🔗", C.GREEN)
+        section("Connecting to running Paladin daemon", "🔗", C.GREEN)
         token = wait_for_api(timeout_sec=20)
         if not token:
-            step("Не удалось подключиться к API.", "error")
+            step("Failed to connect to the operational REST API.", "error")
             sys.exit(1)
         wait_for_demo_start(token)
 
-    step(f"Dashboard: {DASHBOARD_URL}", "ok")
+    step(f"Dashboard URI: {DASHBOARD_URL}", "ok")
 
     try:
-        # ── Фазы демо ─────────────────────────────────────────────────────────
         run_all = args.phase == "all"
 
         if run_all or args.phase == "schema":
@@ -1002,7 +1000,7 @@ def main():
 
         if run_all or args.phase == "ingestion":
             phase_ingestion(token, demo_mode=(args.phase == "all"))
-            pause(3, "очередь обрабатывается")
+            pause(3, "Processing queued events")
 
         if run_all or args.phase == "llm":
             found_incidents = phase_llm_monitor(token, watch_seconds=args.watch)
@@ -1019,16 +1017,16 @@ def main():
         if (run_all or args.phase == "forensic") and not args.no_forensic:
             asyncio.run(phase_forensic(ollama_url))
 
-        # ── Финальный итог ────────────────────────────────────────────────────
+        # Complete banner
         banner(
-            "  ✅  ДЕМОНСТРАЦИЯ ЗАВЕРШЕНА\n"
-            "  Все слои системы Paladin v2.0 продемонстрированы.\n"
+            "  ✅  SHOWCASE COMPLETED SUCCESSFULLY\n"
+            "  All operational layers of Paladin v2.0 demonstrated.\n"
             f"  Dashboard: {DASHBOARD_URL}  |  admin / admin",
             C.GREEN
         )
 
         if paladin_proc:
-            step("Paladin продолжает работать. Нажмите Ctrl+C для остановки.", "info")
+            step("Paladin is active. Press Ctrl+C to terminate.", "info")
             try:
                 while True:
                     time.sleep(1)
@@ -1036,16 +1034,16 @@ def main():
                 pass
 
     except KeyboardInterrupt:
-        banner("  ⏹  ДЕМО ПРЕРВАНО ПОЛЬЗОВАТЕЛЕМ", C.YELLOW)
+        banner("  ⏹  DEMO TERMINATED BY USER", C.YELLOW)
     finally:
         if paladin_proc:
-            step("Останавливаем Paladin...", "wait")
+            step("Shutting down Paladin service...", "wait")
             paladin_proc.terminate()
             try:
                 paladin_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 paladin_proc.kill()
-            step("Paladin остановлен.", "ok")
+            step("Paladin service stopped.", "ok")
 
 
 if __name__ == "__main__":

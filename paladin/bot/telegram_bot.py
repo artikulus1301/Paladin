@@ -60,15 +60,15 @@ class AccessMiddleware:
 async def cmd_start(msg: Message) -> None:
     await msg.answer(
         "🛡️ <b>Paladin Security Assistant</b>\n\n"
-        "Я AI-ассистент системы безопасности Paladin.\n"
-        "Вы можете задать мне вопрос о текущих инцидентах, "
-        "сотрудниках или статусе системы.\n\n"
-        "<b>Команды:</b>\n"
-        "/start — это сообщение\n"
-        "/status — статус компонентов\n"
-        "/incidents — активные инциденты\n"
-        "/ask &lt;вопрос&gt; — задать вопрос через LLM\n\n"
-        "Или просто напишите вопрос текстом.",
+        "I am the Paladin security system AI assistant.\n"
+        "You can ask me questions about active incidents, "
+        "employees, or the system status.\n\n"
+        "<b>Commands:</b>\n"
+        "/start — show this help message\n"
+        "/status — show system component status\n"
+        "/incidents — list active incidents\n"
+        "/ask &lt;question&gt; — ask the LLM security advisor\n\n"
+        "Or simply type your question below.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -106,14 +106,14 @@ async def cmd_incidents(msg: Message, neo4j: Any) -> None:
     try:
         incidents = await neo4j.get_open_incidents(limit=10)
     except Exception as e:
-        await msg.answer(f"❌ Ошибка получения инцидентов: {html.escape(str(e)[:200])}")
+        await msg.answer(f"❌ Error fetching incidents: {html.escape(str(e)[:200])}")
         return
 
     if not incidents:
-        await msg.answer("✅ Нет активных инцидентов.")
+        await msg.answer("✅ No active incidents.")
         return
 
-    lines = [f"🚨 <b>Активные инциденты ({len(incidents)})</b>\n"]
+    lines = [f"🚨 <b>Active Incidents ({len(incidents)})</b>\n"]
     for inc in incidents:
         sev = inc.get("severity", "?")
         icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡"}.get(sev, "🟢")
@@ -143,7 +143,7 @@ async def handle_query(msg: Message, neo4j: Any, llm: Any) -> None:
 
     # Skip very short messages
     if len(query) < 3:
-        await msg.answer("Пожалуйста, введите более развёрнутый запрос.")
+        await msg.answer("Please provide a more detailed query.")
         return
 
     user_id = msg.from_user.id if msg.from_user else 0
@@ -215,10 +215,10 @@ async def handle_query(msg: Message, neo4j: Any, llm: Any) -> None:
         answer = await llm.generate(prompt, system=TELEGRAM_SYSTEM_PROMPT)
         answer = answer.strip()
         if not answer:
-            answer = "⚠️ LLM вернул пустой ответ. Попробуйте переформулировать вопрос."
+            answer = "⚠️ LLM returned an empty response. Please try rephrasing your question."
     except Exception as e:
         log.error("llm_error", error=str(e))
-        answer = f"❌ Ошибка LLM: {html.escape(str(e)[:300])}"
+        answer = f"❌ LLM Error: {html.escape(str(e)[:300])}"
 
     for chunk in _split_message(answer, 4000):
         await msg.answer(chunk)
@@ -258,8 +258,8 @@ def create_dispatcher(neo4j: Any, llm: Any) -> Dispatcher:
 
 async def set_commands(bot: Bot) -> None:
     cmds = [
-        BotCommand(command="start", description="Приветствие и помощь"),
-        BotCommand(command="status", description="Статус компонентов Paladin"),
-        BotCommand(command="incidents", description="Список активных инцидентов"),
+        BotCommand(command="start", description="Welcome and help message"),
+        BotCommand(command="status", description="Paladin system status"),
+        BotCommand(command="incidents", description="List of active incidents"),
     ]
     await bot.set_my_commands(cmds, scope=BotCommandScopeDefault())
