@@ -27,7 +27,17 @@ _MODELS = {
 def _load_model(lang: str) -> Language:
     model_name = _MODELS.get(lang, _MODELS["xx"])
     log.info("loading_spacy_model", model=model_name, lang=lang)
-    return spacy.load(model_name)
+    try:
+        return spacy.load(model_name)
+    except Exception as e:
+        log.warning("spacy_model_not_found_downloading", model=model_name, error=str(e))
+        try:
+            from spacy.cli import download
+            download(model_name)
+            return spacy.load(model_name)
+        except Exception as dl_err:
+            log.error("spacy_download_failed_using_blank", model=model_name, error=str(dl_err))
+            return spacy.blank(lang if lang in ("en", "ru") else "en")
 
 
 # ── data classes ──────────────────────────────────────────────────────────────

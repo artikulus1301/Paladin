@@ -11,6 +11,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
+_DEFAULT_DASHBOARD_SECRET = "paladin-secret-change-me"
+_INSECURE_PASSWORDS = {"admin", "password", "changeme", "paladin", ""}
+
+
 class RunMode(str, Enum):
     DUMMY = "dummy"
     PRODUCTION = "production"
@@ -21,9 +25,7 @@ class Settings(BaseSettings):
     run_mode: RunMode = Field(RunMode.DUMMY, env="PALADIN_MODE")
     instance_name: str = Field("paladin-dev", env="PALADIN_INSTANCE")
 
-    # ── Telegram Bot ──────────────────────────────────────────────────────────
-    telegram_token: str = Field("", env="TELEGRAM_TOKEN")
-    telegram_allowed_users: str = Field("", env="TELEGRAM_ALLOWED_USERS")
+    dashboard_admin_password: str = Field("admin", env="DASHBOARD_ADMIN_PASSWORD")
 
     # ── Neo4j (hot graph) ──────────────────────────────────────────────────────
     neo4j_uri: str = Field("bolt://localhost:7687", env="NEO4J_URI")
@@ -50,6 +52,14 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field("http://localhost:11434", env="OLLAMA_BASE_URL")
     ollama_model: str = Field("qwen3.5:9b", env="OLLAMA_MODEL")
     ollama_timeout: int = Field(120, env="OLLAMA_TIMEOUT")
+    ollama_keep_alive: str = Field(
+        "30m", env="OLLAMA_KEEP_ALIVE",
+        description="How long Ollama keeps the model loaded between requests (avoids cold starts)",
+    )
+    llm_workers: int = Field(
+        2, env="LLM_WORKERS",
+        description="Concurrent incident-analysis workers (LLM calls never block ingestion)",
+    )
 
     # ── Internet (SearXNG + trafilatura) ───────────────────────────────────────
     searxng_url: str = Field("http://localhost:8080", env="SEARXNG_URL")
@@ -59,6 +69,12 @@ class Settings(BaseSettings):
     sap_score_threshold: float = Field(0.7, env="SAP_SCORE_THRESHOLD")
     sap_correlation_window_minutes: int = Field(60, env="SAP_CORRELATION_WINDOW")
     sap_max_events_per_batch: int = Field(100, env="SAP_MAX_EVENTS_BATCH")
+    sap_utc_offset_hours: int = Field(
+        0, env="SAP_UTC_OFFSET_HOURS",
+        description="Office timezone offset from UTC, used for off-hours detection",
+    )
+    sap_work_hours_start: int = Field(6, env="SAP_WORK_HOURS_START")
+    sap_work_hours_end: int = Field(22, env="SAP_WORK_HOURS_END")
 
     # ── Verifier ───────────────────────────────────────────────────────────────
     verifier_entropy_window: int = Field(50, env="VERIFIER_ENTROPY_WINDOW")
@@ -83,7 +99,7 @@ class Settings(BaseSettings):
     # ── Dashboard ──────────────────────────────────────────────────────────────
     dashboard_host: str = Field("0.0.0.0", env="DASHBOARD_HOST")
     dashboard_port: int = Field(8888, env="DASHBOARD_PORT")
-    dashboard_secret: str = Field("paladin-secret-change-me", env="DASHBOARD_SECRET")
+    dashboard_secret: str = Field(_DEFAULT_DASHBOARD_SECRET, env="DASHBOARD_SECRET")
 
     # ── Archive policy (days) ──────────────────────────────────────────────────
     archive_log_days: int = Field(30, env="ARCHIVE_LOG_DAYS")
@@ -111,6 +127,19 @@ class Settings(BaseSettings):
     sandbox_exec_timeout: int = Field(300, env="SANDBOX_EXEC_TIMEOUT")
     max_forensic_iterations: int = Field(5, env="MAX_FORENSIC_ITERATIONS")
     forensic_enabled: bool = Field(True, env="FORENSIC_ENABLED")
+    max_concurrent_investigations: int = Field(
+        1, env="MAX_CONCURRENT_INVESTIGATIONS",
+        description="Upper bound on simultaneously running sandbox investigations",
+    )
+    forensic_approval_timeout: int = Field(
+        60, env="FORENSIC_APPROVAL_TIMEOUT",
+        description="Seconds to wait for operator on REQUIRES_APPROVAL MCP calls before auto-deny",
+    )
+    forensic_demo_fixtures: bool = Field(
+        False, env="FORENSIC_DEMO_FIXTURES",
+        description="Serve canned SIFT results for the demo evidence set (never enable in production)",
+    )
+    forensic_demo_fixture_key: str = Field("nromanoff", env="FORENSIC_DEMO_FIXTURE_KEY")
 
     # ── Dummy generators ──────────────────────────────────────────────────────
     dummy_employee_count: int = Field(25, env="DUMMY_EMPLOYEE_COUNT")
@@ -129,11 +158,23 @@ class Settings(BaseSettings):
     def protected_account_list(self) -> List[str]:
         return [a.strip() for a in self.protected_accounts.split(",") if a.strip()]
 
-    @property
-    def telegram_allowed_user_ids(self) -> List[int]:
-        if not self.telegram_allowed_users:
-            return []
-        return [int(uid.strip()) for uid in self.telegram_allowed_users.split(",") if uid.strip()]
+    def is_protected(self, entity: str) -> bool:
+        """Case-insensitive match of a UID / account name against the protected list."""
+        if not entity:
+            return False
+        e = entity.strip().lower()
+        return any(e == p.lower() for p in self.protected_account_list)
+
+    def insecure_defaults(self) -> List[str]:
+        """Names of security-relevant settings still holding their shipped defaults."""
+        found = []
+        if self.dashboard_admin_password in _INSECURE_PASSWORDS:
+            found.append("DASHBOARD_ADMIN_PASSWORD")
+        if self.dashboard_secret == _DEFAULT_DASHBOARD_SECRET or len(self.dashboard_secret) < 32:
+            found.append("DASHBOARD_SECRET")
+        if self.neo4j_password == "changeme123":
+            found.append("NEO4J_PASSWORD")
+        return found
 
     model_config = {
         "env_file": ".env",

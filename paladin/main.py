@@ -5,11 +5,8 @@ Wires all layers together and starts the system.
 from __future__ import annotations
 
 import asyncio
-import random
-import sys
-import uuid
-from datetime import datetime, timezone
 import os
+import sys
 
 import structlog
 import uvicorn
@@ -52,8 +49,22 @@ DUMMY_EMPLOYEES = [
 ]
 
 
+def check_security_settings() -> None:
+    """Refuse to run production with shipped default credentials; warn in dummy mode."""
+    insecure = settings.insecure_defaults()
+    if not insecure:
+        return
+    if settings.run_mode == RunMode.PRODUCTION:
+        log.error("insecure_defaults_refusing_to_start", settings=insecure,
+                  hint="set strong values in .env (DASHBOARD_SECRET must be >= 32 chars)")
+        raise SystemExit(2)
+    log.warning("insecure_defaults", settings=insecure,
+                hint="acceptable for local demo only — production mode will refuse to start")
+
+
 async def main() -> None:
     log.info("paladin_startup", mode=settings.run_mode, model=settings.ollama_model)
+    check_security_settings()
 
     # ── Layer: Graph ──────────────────────────────────────────────────────
     from paladin.graph.neo4j_client import Neo4jClient
@@ -68,7 +79,6 @@ async def main() -> None:
 
     # ── Layer: LLM ────────────────────────────────────────────────────────
     from paladin.llm.ollama_client import OllamaClient
-    from paladin.llm.prompts import SYSTEM_PROMPT, build_incident_prompt, parse_llm_response
     llm = OllamaClient()
     await llm.start()
 
@@ -85,29 +95,38 @@ async def main() -> None:
 
     # ── Layer: Verifier ───────────────────────────────────────────────────
     from paladin.verifier.verifier import ActionVerifier
+    from paladin.sap.incident_analyzer import IncidentAnalyzer
     verifier = ActionVerifier()
 
     # ── Layer: Auto-Executor ──────────────────────────────────────────────
     from paladin.sap.auto_executor import AutoExecutor
-    from paladin.dashboard.api import broadcast_incident
-    auto_exec = AutoExecutor(neo4j, broadcast_fn=broadcast_incident)
+    from paladin.dashboard.api import broadcast_incident, broadcast_event
+    auto_exec = AutoExecutor(neo4j, broadcast_fn=broadcast_event)
+    analyzer = IncidentAnalyzer(neo4j, llm, verifier, broadcast_fn=broadcast_incident)
 
     # ── Layer: Forensic (Paladin 2.0) ─────────────────────────────────────
     forensic_plan_mgr = None
     hallucination_tracker = None
+    approval_broker = None
 
     if settings.forensic_enabled:
         from paladin.forensic.action_verifier import ForensicActionVerifier
+        from paladin.forensic.approval_broker import ApprovalBroker
         from paladin.forensic.sandbox_manager import SandboxManager
         from paladin.forensic.mcp_server import SIFTMCPServer
         from paladin.forensic.pg_store import ForensicPGStore
         from paladin.forensic.plan_manager import ForensicPlanManager
-        from paladin.forensic.correlation_engine import CorrelationEngine
         from paladin.forensic.hallucination_tracker import HallucinationTracker
 
         forensic_verifier = ForensicActionVerifier()
         sandbox_mgr = SandboxManager()
         pg_store = ForensicPGStore()
+        approval_broker = ApprovalBroker(broadcast_fn=broadcast_event)
+
+        try:
+            await sandbox_mgr.cleanup_orphans()
+        except Exception as e:
+            log.warning("sandbox_orphan_cleanup_failed", error=str(e))
 
         # Initialize PostgreSQL for forensic logs (best-effort)
         try:
@@ -117,34 +136,73 @@ async def main() -> None:
             log.warning("forensic_pg_store_unavailable", error=str(e))
             pg_store = None
 
-        mcp_server = SIFTMCPServer(sandbox_mgr, forensic_verifier, pg_store)
+        mcp_server = SIFTMCPServer(sandbox_mgr, forensic_verifier, pg_store,
+                                   approval_broker=approval_broker)
         forensic_plan_mgr = ForensicPlanManager(
             neo4j=neo4j, llm=llm, mcp_server=mcp_server,
             sandbox=sandbox_mgr, pg_store=pg_store,
-            broadcast_fn=broadcast_incident)
-        correlation_engine = CorrelationEngine(neo4j, broadcast_fn=broadcast_incident)
+            broadcast_fn=broadcast_event)
         hallucination_tracker = HallucinationTracker(neo4j, pg_store)
 
         # Inject into incident manager for mode routing
         incident_mgr.set_forensic_plan_manager(forensic_plan_mgr)
 
+        if settings.forensic_demo_fixtures:
+            log.warning("forensic_demo_fixtures_enabled",
+                        key=settings.forensic_demo_fixture_key,
+                        note="matching investigations use canned data, marked simulated")
+
         log.info("forensic_layer_initialized",
                  mcp_functions=mcp_server.get_available_functions(),
-                 pipeline_threshold=settings.severity_pipeline_threshold)
+                 pipeline_threshold=settings.severity_pipeline_threshold,
+                 max_concurrent=settings.max_concurrent_investigations)
 
     # ── Layer: Dashboard ──────────────────────────────────────────────────
     from paladin.dashboard.api import app as dashboard_app, init_dashboard
     scenario_bus: asyncio.Queue = asyncio.Queue()
     init_dashboard(neo4j, scenario_bus, auto_exec,
                    forensic_plan_mgr=forensic_plan_mgr,
-                   hallucination_tracker=hallucination_tracker)
+                   hallucination_tracker=hallucination_tracker,
+                   approval_broker=approval_broker)
 
     # ── Queues (replace Kafka in dummy mode) ──────────────────────────────
+    # event_queue    : raw events → single ordered SAP consumer (parse/enrich/correlate)
+    # analysis_queue : incident contexts → pool of LLM workers (slow, parallel)
     event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    analysis_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
 
-    # ── SAP event processor ───────────────────────────────────────────────
+    # ── Background task bookkeeping ───────────────────────────────────────
+    background_tasks: set[asyncio.Task] = set()
+    investigating: set[str] = set()
+    investigation_slots = asyncio.Semaphore(max(1, settings.max_concurrent_investigations))
+
+    def spawn(coro, name: str) -> None:
+        """Run a fire-and-forget task while keeping a reference and logging failures."""
+        task = asyncio.create_task(coro, name=name)
+        background_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            background_tasks.discard(t)
+            if not t.cancelled() and t.exception():
+                log.error("background_task_failed", task=name, error=str(t.exception()))
+        task.add_done_callback(_done)
+
+    async def run_investigation(llm_context: dict) -> None:
+        iid = llm_context["incident_id"]
+        try:
+            async with investigation_slots:
+                log.info("pipeline_mode_activated", incident_id=iid)
+                await forensic_plan_mgr.run_full_investigation(
+                    incident_id=iid,
+                    context=llm_context,
+                    evidence_path=settings.forensic_evidence_base,
+                )
+        finally:
+            investigating.discard(iid)
+
+    # ── SAP event processor (stages 1-4, ordered) ─────────────────────────
     async def process_event(topic: str, event: dict) -> None:
-        """SAP pipeline: parse → enrich → correlate → incident → LLM → verify."""
+        """SAP pipeline: parse → enrich → correlate → incident."""
         # Stage 1: Morpho-semantic analysis
         text_content = _extract_text(topic, event)
         analysis = None
@@ -160,77 +218,22 @@ async def main() -> None:
         # Stage 3: Correlation
         correlation = await correlator.correlate(topic, event)
 
-        # Stage 4: Incident trigger
+        # Stage 4: Incident trigger (new incident or severity escalation)
         llm_context = await incident_mgr.maybe_create_incident(topic, event, correlation)
-        if not llm_context:
-            return
+        if llm_context:
+            await analysis_queue.put(llm_context)
 
-        # ── LLM notification ──────────────────────────────────────────
-        try:
-            # ── Paladin 2.0: Pipeline Mode fork ─────────────────────
-            if llm_context.get("forensic_mode") == "pipeline" and forensic_plan_mgr:
-                log.info("pipeline_mode_activated",
-                         incident_id=llm_context["incident_id"])
-                # Launch forensic investigation asynchronously
-                asyncio.create_task(
-                    forensic_plan_mgr.run_full_investigation(
-                        incident_id=llm_context["incident_id"],
-                        context=llm_context,
-                        evidence_path=settings.forensic_evidence_base,
-                    )
-                )
-                # Still run normal LLM for initial summary
+    # ── LLM analysis + verification (stage 5, parallel workers) ───────────
+    async def analyze_incident(llm_context: dict) -> None:
+        iid = llm_context["incident_id"]
 
-            prompt = build_incident_prompt(llm_context)
-            llm_response = await llm.generate(prompt, system=SYSTEM_PROMPT)
-            parsed = parse_llm_response(llm_response)
+        # Paladin 2.0: Pipeline Mode — forensic investigation runs alongside
+        if (llm_context.get("forensic_mode") == "pipeline" and forensic_plan_mgr
+                and iid not in investigating):
+            investigating.add(iid)
+            spawn(run_investigation(llm_context), name=f"investigation-{iid}")
 
-            # ── Verification ──────────────────────────────────────────
-            verification = verifier.verify_action(
-                proposed_action=parsed["action"],
-                severity=llm_context["severity"],
-                target_entities=llm_context["involved_employees"],
-                llm_response=llm_response,
-            )
-
-            if verification.action_check.approved:
-                await neo4j.update_incident(llm_context["incident_id"], {
-                    "llm_summary": parsed["summary"],
-                    "action_proposed": parsed["action"],
-                    "action_status": "pending",
-                    "forensic_mode": llm_context.get("forensic_mode", "tool"),
-                })
-                log.info("incident_processed",
-                         id=llm_context["incident_id"],
-                         action=parsed["action"],
-                         forensic_mode=llm_context.get("forensic_mode"),
-                         approved=True)
-            else:
-                # Retry with feedback
-                log.warning("action_rejected", reason=verification.action_check.reason)
-                await neo4j.update_incident(llm_context["incident_id"], {
-                    "llm_summary": parsed["summary"] + f"\n\n[VERIFIER REJECTED: {verification.action_check.reason}]",
-                    "action_proposed": "NOTIFY",
-                    "action_status": "auto_executed",
-                })
-
-            # Broadcast to dashboard
-            await broadcast_incident({
-                "incident_id": llm_context["incident_id"],
-                "title": llm_context["title"],
-                "severity": llm_context["severity"],
-                "score": llm_context["score"],
-                "action": parsed["action"],
-                "forensic_mode": llm_context.get("forensic_mode", "tool"),
-            })
-
-        except Exception as e:
-            log.error("llm_pipeline_error", error=str(e), incident=llm_context["incident_id"])
-            await neo4j.update_incident(llm_context["incident_id"], {
-                "llm_summary": f"LLM processing error: {e}",
-                "action_proposed": "NOTIFY",
-                "action_status": "error",
-            })
+        await analyzer.analyze(llm_context)
 
     def _extract_text(topic: str, event: dict) -> str:
         if topic == "logs":
@@ -243,18 +246,28 @@ async def main() -> None:
             return event.get("transcript", "")
         return ""
 
-    # ── Event consumer loop ───────────────────────────────────────────────
+    # ── Consumers ─────────────────────────────────────────────────────────
     async def event_consumer():
         log.info("event_consumer_started")
         while True:
+            topic, event = await event_queue.get()
             try:
-                topic, event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
                 await process_event(topic, event)
-                event_queue.task_done()
-            except asyncio.TimeoutError:
-                continue
             except Exception as e:
-                log.error("consumer_error", error=str(e))
+                log.error("consumer_error", error=str(e), topic=topic)
+            finally:
+                event_queue.task_done()
+
+    async def analysis_worker(n: int):
+        log.info("analysis_worker_started", worker=n)
+        while True:
+            llm_context = await analysis_queue.get()
+            try:
+                await analyze_incident(llm_context)
+            except Exception as e:
+                log.error("analysis_worker_error", worker=n, error=str(e))
+            finally:
+                analysis_queue.task_done()
 
     # ── Scenario handler ─────────────────────────────────────────────────
     async def scenario_handler():
@@ -264,29 +277,28 @@ async def main() -> None:
         from paladin.dummy.call_generator import CallGenerator
 
         employee_uids = [e["uid"] for e in DUMMY_EMPLOYEES]
-        log_gen = LogGenerator(employee_uids)
-        mail_gen = MailGenerator(DUMMY_EMPLOYEES)
-        chat_gen = ChatGenerator(DUMMY_EMPLOYEES)
-        call_gen = CallGenerator(DUMMY_EMPLOYEES)
-
         generators = {
-            "logs": log_gen, "emails": mail_gen,
-            "messages": chat_gen, "calls": call_gen,
+            "logs": LogGenerator(employee_uids),
+            "emails": MailGenerator(DUMMY_EMPLOYEES),
+            "messages": ChatGenerator(DUMMY_EMPLOYEES),
+            "calls": CallGenerator(DUMMY_EMPLOYEES),
         }
 
         while True:
+            req = await scenario_bus.get()
             try:
-                req = await asyncio.wait_for(scenario_bus.get(), timeout=1.0)
                 if isinstance(req, dict) and req.get("type") == "scenario_trigger":
                     gen = generators.get(req["source"])
                     if gen:
                         params = {}
                         if req.get("actor_uid"):
-                            params["actor_uid"] = req["actor_uid"]
+                            # Insider scenarios name the employee actor_uid, attacks
+                            # against an employee (brute force, phishing) target_uid
+                            params["actor_uid"] = params["target_uid"] = req["actor_uid"]
                         await gen.generate_scenario(event_queue, req["scenario"], **params)
                         log.info("scenario_executed", scenario=req["scenario"])
-            except asyncio.TimeoutError:
-                continue
+                    else:
+                        log.warning("scenario_unknown_source", source=req.get("source"))
             except Exception as e:
                 log.error("scenario_error", error=str(e))
 
@@ -319,20 +331,6 @@ async def main() -> None:
         server = uvicorn.Server(config)
         await server.serve()
 
-    # ── Telegram bot (optional) ───────────────────────────────────────────
-    telegram_bot = None
-    if settings.telegram_token:
-        from paladin.bot.telegram_bot import create_bot, create_dispatcher, set_commands
-        telegram_bot = create_bot()
-        telegram_dp = create_dispatcher(neo4j=neo4j, llm=llm)
-        await set_commands(telegram_bot)
-        log.info("telegram_bot_configured", model=settings.ollama_model)
-
-    async def run_telegram():
-        if telegram_bot:
-            log.info("telegram_bot_starting")
-            await telegram_dp.start_polling(telegram_bot, allowed_updates=["message"])
-
     # ── Launch all ────────────────────────────────────────────────────────
 
     log.info("paladin_ready",
@@ -340,7 +338,7 @@ async def main() -> None:
              mode=settings.run_mode,
              auto_execute=settings.auto_execute_enabled,
              operator_timeout=settings.operator_timeout_seconds,
-             telegram=bool(settings.telegram_token))
+             llm_workers=settings.llm_workers)
 
     tasks = [
         asyncio.create_task(event_consumer()),
@@ -348,23 +346,23 @@ async def main() -> None:
         asyncio.create_task(run_dashboard()),
         asyncio.create_task(auto_exec.run()),
     ]
+    tasks += [asyncio.create_task(analysis_worker(n))
+              for n in range(max(1, settings.llm_workers))]
 
     if settings.run_mode == RunMode.DUMMY:
         tasks.append(asyncio.create_task(start_dummy_generators()))
 
-    if telegram_bot:
-        tasks.append(asyncio.create_task(run_telegram()))
-
     try:
         await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
-        log.info("paladin_shutdown")
+        log.info("paladin_shutdown", background_tasks=len(background_tasks))
+        for t in [*tasks, *background_tasks]:
+            t.cancel()
+        await asyncio.gather(*tasks, *background_tasks, return_exceptions=True)
         await llm.stop()
         await neo4j.close()
-        if telegram_bot:
-            await telegram_bot.session.close()
 
 
 if __name__ == "__main__":

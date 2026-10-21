@@ -24,6 +24,8 @@ from paladin.config.settings import settings
 
 log = structlog.get_logger(__name__)
 
+SANDBOX_LABEL = "paladin.sandbox"
+
 
 class SandboxManager:
     """
@@ -58,6 +60,9 @@ class SandboxManager:
         cmd = [
             "docker", "create",
             "--name", container_name,
+            # Label lets cleanup_orphans() find sandboxes left by a crashed run
+            "--label", f"{SANDBOX_LABEL}=true",
+            "--label", f"paladin.incident={incident_id}",
             # ── Network isolation (Boundary #4) ─────────────────────────
             "--network", "none",
             # ── Security hardening ──────────────────────────────────────
@@ -188,7 +193,8 @@ class SandboxManager:
         """
         container_name = self._active_containers.pop(incident_id, None)
         if not container_name:
-            container_name = f"sift-sandbox-{incident_id}"
+            # Already destroyed by this manager (finalize_plan + cleanup both call us)
+            return
 
         try:
             await self._run_cmd(["docker", "stop", "-t", "5", container_name])
@@ -216,6 +222,23 @@ class SandboxManager:
             return result.strip().lower() == "true"
         except Exception:
             return False
+
+    async def cleanup_orphans(self) -> int:
+        """
+        Remove sandboxes left behind by a previous process that was killed
+        mid-investigation (its finally-cleanup never ran). Call once at startup.
+        """
+        out = await self._run_cmd(
+            ["docker", "ps", "-aq", "--filter", f"label={SANDBOX_LABEL}=true"])
+        ids = [i for i in out.split() if i]
+        for cid in ids:
+            try:
+                await self._run_cmd(["docker", "rm", "-f", cid])
+            except Exception as e:
+                log.warning("sandbox_orphan_rm_failed", container=cid, error=str(e))
+        if ids:
+            log.warning("sandbox_orphans_removed", count=len(ids))
+        return len(ids)
 
     def get_container_name(self, incident_id: str) -> str | None:
         """Get the container name for an incident."""

@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../../../Downloads/win7-32-nromanoff-10.3.58.5"
+		}
+	],
+	"settings": {
+		"files.readonlyInclude": {
+			"{**/.c4z/.extsrcs/*.PROTSYM.cbl,**/.c4z/.extsrcs/*.PROTSYM.listing}": true
+		},
+		"powershell.cwd": "Paladin System"
+	}
+}

@@ -4,12 +4,17 @@ Runs without LLM when findings exist from 2+ evidence sources.
 Detects: ghost processes, temporal paradoxes, registry mismatches, invisible connections.
 """
 from __future__ import annotations
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 import structlog
 
 log = structlog.get_logger(__name__)
+
+_ISO_TS_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
+# Clock skew between evidence sources that is still considered consistent
+_TEMPORAL_TOLERANCE_SECONDS = 120
 
 
 # ── Contradiction types ───────────────────────────────────────────────────────
@@ -75,13 +80,14 @@ class CorrelationEngine:
                 c["finding_a"], c["finding_b"],
                 c["description"], c["contradiction_type"])
 
-            # Add investigation TODO item
+            # Follow-up for the analyst. The engine runs while the plan is being
+            # finalized, so the agent will not execute it: NEEDS_REVIEW, not PENDING.
             await self._neo4j.create_todo_item({
                 "item_id": f"TODO-{uuid.uuid4().hex[:8]}",
                 "plan_id": plan_id,
                 "order_index": 900 + len(contradictions),
                 "description": f"Investigate discrepancy: {c['description'][:200]}",
-                "status": "PENDING",
+                "status": "NEEDS_REVIEW",
                 "recheck_reason": c["description"],
                 "iteration_added": -1,  # Added by correlation engine
             })
@@ -137,34 +143,54 @@ class CorrelationEngine:
 
     async def _detect_temporal_paradoxes(self, by_source: dict,
                                          findings: list[dict]) -> list[dict]:
-        """Timeline inconsistencies between sources."""
-        results = []
-        # Compare timestamps across findings that reference the same entity
-        entities = {}
-        for f in findings:
-            desc = f.get("description", "")
-            # Extract timestamps and entities from descriptions
-            for entity in self._extract_entities(desc):
-                entities.setdefault(entity, []).append(f)
+        """
+        A file that existed on disk BEFORE the network transfer that delivered it
+        (disk timestamp earlier than the earliest network timestamp for the same
+        entity) — a timestomping / alternative-delivery indicator.
 
-        for entity, entity_findings in entities.items():
-            if len(entity_findings) < 2:
+        An entity merely appearing in several sources is corroboration, not a
+        contradiction, and is NOT reported. Findings without timestamps can't
+        produce a paradox.
+        """
+        results = []
+        per_entity: dict[str, dict[str, list[tuple[datetime, dict]]]] = {}
+        for f in findings:
+            src = self._classify_source(f.get("tool_used", ""))
+            if src not in ("disk", "network"):
                 continue
-            sources = set(self._classify_source(f.get("tool_used", ""))
-                          for f in entity_findings)
-            if len(sources) < 2:
+            stamps = self._extract_timestamps(f.get("description", ""))
+            if not stamps:
                 continue
-            # Flag for manual review — detailed temporal analysis
-            # requires parsed timestamps which vary by tool
-            results.append({
-                "finding_a": entity_findings[0].get("finding_id", ""),
-                "finding_b": entity_findings[1].get("finding_id", ""),
-                "contradiction_type": "temporal_paradox",
-                "description": (f"Entity '{entity}' appears in {len(entity_findings)} "
-                                f"findings from {len(sources)} different sources. "
-                                f"Requires temporal consistency verification."),
-            })
+            for entity in self._extract_executables(f.get("description", "")):
+                bucket = per_entity.setdefault(entity.lower(), {"disk": [], "network": []})
+                bucket[src].extend((ts, f) for ts in stamps)
+
+        for entity, by_src in per_entity.items():
+            if not by_src["disk"] or not by_src["network"]:
+                continue
+            disk_ts, disk_f = min(by_src["disk"], key=lambda x: x[0])
+            net_ts, net_f = min(by_src["network"], key=lambda x: x[0])
+            if (net_ts - disk_ts).total_seconds() > _TEMPORAL_TOLERANCE_SECONDS:
+                results.append({
+                    "finding_a": disk_f.get("finding_id", ""),
+                    "finding_b": net_f.get("finding_id", ""),
+                    "contradiction_type": "temporal_paradox",
+                    "description": (f"'{entity}' is on disk at {disk_ts.isoformat()} but its "
+                                    f"network delivery is first seen at {net_ts.isoformat()} — "
+                                    f"possible timestomping or a different delivery path."),
+                })
         return results[:5]  # Cap to avoid noise
+
+    @staticmethod
+    def _extract_timestamps(text: str) -> list[datetime]:
+        out = []
+        for m in _ISO_TS_RE.findall(text):
+            try:
+                ts = datetime.fromisoformat(m.replace(" ", "T").replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            out.append(ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))
+        return out
 
     async def _detect_registry_mismatches(self, by_source: dict,
                                            findings: list[dict]) -> list[dict]:
@@ -263,6 +289,13 @@ class CorrelationEngine:
 
     @staticmethod
     def _is_private_ip(ip: str) -> bool:
-        return (ip.startswith("10.") or ip.startswith("192.168.") or
-                ip.startswith("172.16.") or ip.startswith("127.") or
-                ip in ("0.0.0.0", "255.255.255.255"))
+        if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+            return True
+        if ip.startswith("127.") or ip.startswith("10.") or ip.startswith("192.168."):
+            return True
+        if ip.startswith("172."):
+            try:
+                return 16 <= int(ip.split(".")[1]) <= 31
+            except (IndexError, ValueError):
+                pass
+        return False

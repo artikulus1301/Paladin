@@ -66,6 +66,49 @@ class SecurityAnalysis:
     is_security_relevant: bool
 
 
+SECURITY_TERMS_EN.update({"creds": 0.6, "passwd": 0.6})
+
+# ── Strong indicators detected by pattern, not by vocabulary ──────────────────
+# A single match is decisive on its own, so it sets a floor for the risk score
+# instead of being averaged with other terms.
+_URL_RE = re.compile(r"\b(?:https?|ftp)://\S+|\bwww\.\S+", re.IGNORECASE)
+_KEYWORD_SECRET_RE = re.compile(
+    r"\b(?:passwords?|passwd|pwd|pass|creds?|credentials|пароль|логин)\s*[:=]\s*\S{4,}", re.IGNORECASE)
+_PAIR_RE = re.compile(r"\b[\w.@-]{3,}\s*[/:]\s*(\S{8,})")
+
+
+def _looks_like_password(token: str) -> bool:
+    """8+ chars mixing at least three of: upper, lower, digit, symbol."""
+    classes = [any(c.isupper() for c in token), any(c.islower() for c in token),
+               any(c.isdigit() for c in token), any(not c.isalnum() for c in token)]
+    return sum(classes) >= 3
+
+
+def _has_plaintext_credential(text: str) -> bool:
+    # "password: Hunter2024", "пароль = qwerty123", "creds: ..."
+    return bool(_KEYWORD_SECRET_RE.search(text))
+
+
+_CREDENTIAL_CONTEXT_RE = re.compile(
+    r"\b(?:creds?|credentials|passwords?|passwd|login|username|логин|пароль|учётн\w*|учетн\w*)\b",
+    re.IGNORECASE)
+
+
+def _has_credential_pair(text: str) -> bool:
+    # "use these creds: admin / Pr0d_DB_2025!". Without credential context a
+    # "word/Complex-Token" shape is far more often a path, branch or timestamp.
+    if not _CREDENTIAL_CONTEXT_RE.search(text):
+        return False
+    stripped = _URL_RE.sub(" ", text)
+    return any(_looks_like_password(m.group(1).rstrip(".,;")) for m in _PAIR_RE.finditer(stripped))
+
+
+STRONG_INDICATORS = [
+    ("plaintext credential", _has_plaintext_credential, 0.85),
+    ("username/password pair", _has_credential_pair, 0.85),
+]
+
+
 class MorphoParser:
     """
     Wraps Richter's SpaCy/Natasha analyzers and extends with
@@ -81,6 +124,10 @@ class MorphoParser:
         base = self._analyzer.analyze(text)
         terms_found = self._scan_security_terms(text)
         text_risk = self._compute_risk_score(terms_found, base)
+        for name, detector, floor in STRONG_INDICATORS:
+            if detector(text):
+                terms_found.insert(0, (name, floor))
+                text_risk = max(text_risk, floor)
         sentiment = self._classify_sentiment(text, terms_found)
 
         return SecurityAnalysis(

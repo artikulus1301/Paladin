@@ -131,8 +131,7 @@ class ActionVerifier:
             )
 
         # ── Step 3: Protected entities ────────────────────────────────────────
-        protected = settings.protected_account_list
-        targeted_protected = [e for e in target_entities if e in protected]
+        targeted_protected = [e for e in target_entities if settings.is_protected(e)]
         if targeted_protected and action_def.level >= ActionLevel.FLAG:
             action_check = ActionCheckResult(
                 approved=False,
@@ -149,19 +148,25 @@ class ActionVerifier:
                 reason="protected_entity",
             )
 
-        # ── Action approved ───────────────────────────────────────────────────
-        action_check = ActionCheckResult(
-            approved=True,
-            action=proposed_action,
-            level=action_def.level.name,
-            reason=f"Action {proposed_action} approved for severity {severity}",
-            requires_confirmation=action_def.requires_confirmation,
-            timeout_minutes=action_def.timeout_minutes,
-        )
-
         # ── Step 4: LLM response quality ─────────────────────────────────────
         quality_signals = self._check_quality(llm_response)
         quality_passed = all(s.passed for s in quality_signals)
+
+        # Low-quality reasoning must not trigger enforcement on its own:
+        # anything from FLAG upwards then waits for an explicit operator decision.
+        requires_confirmation = action_def.requires_confirmation or (
+            not quality_passed and action_def.level >= ActionLevel.FLAG
+        )
+
+        # ── Action approved ───────────────────────────────────────────────────
+        action_check = ActionCheckResult(
+            approved=True,
+            action=action_def.name,
+            level=action_def.level.name,
+            reason=f"Action {action_def.name} approved for severity {severity}",
+            requires_confirmation=requires_confirmation,
+            timeout_minutes=action_def.timeout_minutes,
+        )
 
         return VerificationResult(
             action_check=action_check,

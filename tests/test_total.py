@@ -444,7 +444,8 @@ section("17. DASHBOARD API (forensic endpoints)")
 from paladin.dashboard.api import app, init_dashboard
 routes = [r.path for r in app.routes]
 endpoints = ["/api/forensic/plan/{plan_id}", "/api/forensic/incident/{incident_id}",
-             "/api/forensic/accuracy/{plan_id}", "/api/forensic/plan/{plan_id}/approve"]
+             "/api/forensic/accuracy/{plan_id}", "/api/forensic/approvals",
+             "/api/forensic/approvals/{request_id}"]
 for ep in endpoints:
     ok(f"Endpoint {ep}") if ep in routes else fail(f"Endpoint {ep}", "not found")
 

@@ -1,0 +1,50 @@
+# Paladin — local demo infrastructure (Neo4j + PostgreSQL).
+#
+# Paladin itself and Ollama run on the host (see start_demo.ps1).
+# Ports are shifted (17474/17687/15432) so the stack can run next to other
+# Neo4j/PostgreSQL instances on the default ports.
+# Passwords come from .env (NEO4J_PASSWORD, POSTGRES_PASSWORD).
+
+name: paladin-demo
+
+services:
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: paladin_demo_neo4j
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:17474:7474"
+      - "127.0.0.1:17687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+    volumes:
+      - paladin_demo_neo4j:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: paladin_demo_postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_USER: paladin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: paladin_archive
+    volumes:
+      - paladin_demo_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paladin"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  paladin_demo_neo4j:
+  paladin_demo_postgres:

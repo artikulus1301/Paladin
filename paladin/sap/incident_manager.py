@@ -12,9 +12,11 @@ import structlog
 
 from paladin.config.settings import settings
 from paladin.graph.neo4j_client import Neo4jClient
-from paladin.sap.correlator import CorrelationResult, CorrelationHit
+from paladin.sap.correlator import CorrelationResult, CorrelationHit, event_employee
 
 log = structlog.get_logger(__name__)
+
+_SEVERITY_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
 
 class IncidentManager:
@@ -45,8 +47,6 @@ class IncidentManager:
         if not correlation.triggered:
             return None
 
-        incident_id = f"INC-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
-
         # Collect involved employees from all hits
         employees = set()
         event_ids = set()
@@ -58,6 +58,10 @@ class IncidentManager:
         emp = self._extract_employee(topic, event)
         if emp and emp != "__external__":
             employees.add(emp)
+        # Both sides of a private conversation are part of it (e.g. one shares
+        # credentials, the other asked for them and uses them)
+        if topic == "messages" and event.get("is_dm"):
+            employees.update(u for u in event.get("recipient_uids", []) if u and u != "__external__")
 
         # Add the triggering event's ID
         eid = event.get("event_id") or event.get("message_id") or event.get("msg_id") or event.get("call_id", "")
@@ -69,12 +73,8 @@ class IncidentManager:
         # Check for existing open incident to aggregate
         existing_id = await self._neo4j.find_similar_open_incident(title, list(employees))
         if existing_id:
-            log.info("incident_aggregated", incident_id=existing_id, new_score=correlation.total_score)
-            await self._neo4j.add_events_to_incident(
-                existing_id, list(event_ids), correlation.total_score, correlation.severity
-            )
-            # Notify the dashboard of the updated severity without creating a whole new LLM request
-            return None # Do not trigger LLM again to prevent spam
+            return await self._aggregate(existing_id, title, topic, event,
+                                         correlation, employees, event_ids)
 
         incident_id = f"INC-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
@@ -102,28 +102,68 @@ class IncidentManager:
         # Build LLM context
         llm_context = self._build_llm_context(incident, topic, event, correlation)
 
-        # ── Paladin 2.0: Mode routing based on severity score ─────────
-        if (settings.forensic_enabled and
-                self._forensic_plan_manager and
-                correlation.total_score >= settings.severity_pipeline_threshold):
-            llm_context["forensic_mode"] = "pipeline"
-            log.info("forensic_pipeline_mode",
-                     incident_id=incident_id,
-                     score=correlation.total_score,
-                     threshold=settings.severity_pipeline_threshold)
-        else:
-            llm_context["forensic_mode"] = "tool"
-
+        llm_context["forensic_mode"] = self._route_mode(incident_id, correlation.total_score)
         return llm_context
 
+    async def _aggregate(self, existing_id: str, title: str, topic: str, event: dict,
+                         correlation: CorrelationResult, employees: set,
+                         event_ids: set) -> dict | None:
+        """
+        Attach new evidence to an open incident. The LLM is re-run only when
+        severity escalates — otherwise repeated events would spam the model.
+        """
+        before = await self._neo4j.get_incident_brief(existing_id) or {}
+        await self._neo4j.add_events_to_incident(
+            existing_id, list(event_ids), correlation.total_score, correlation.severity
+        )
+        prev_sev = before.get("severity") or "LOW"
+        escalated = _SEVERITY_RANK.get(correlation.severity, 0) > _SEVERITY_RANK.get(prev_sev, 0)
+        log.info("incident_aggregated", incident_id=existing_id,
+                 new_score=correlation.total_score, escalated=escalated,
+                 severity_before=prev_sev, severity_now=correlation.severity)
+        if not escalated:
+            return None
+
+        incident = {
+            "incident_id": existing_id,
+            "title": title,
+            "severity": correlation.severity,
+            "score": max(correlation.total_score, before.get("score") or 0),
+            "involved_employees": list(employees),
+        }
+        llm_context = self._build_llm_context(incident, topic, event, correlation)
+        llm_context["escalated_from"] = prev_sev
+        # Start a forensic investigation only if one isn't already attached
+        llm_context["forensic_mode"] = (
+            "tool" if before.get("has_plan")
+            else self._route_mode(existing_id, incident["score"])
+        )
+        log.warning("incident_escalated", incident_id=existing_id,
+                    from_severity=prev_sev, to_severity=correlation.severity)
+        return llm_context
+
+    def _route_mode(self, incident_id: str, score: float) -> str:
+        """Paladin 2.0: Pipeline Mode for high scores, Tool Mode otherwise."""
+        if (settings.forensic_enabled and
+                self._forensic_plan_manager and
+                score >= settings.severity_pipeline_threshold):
+            log.info("forensic_pipeline_mode", incident_id=incident_id, score=score,
+                     threshold=settings.severity_pipeline_threshold)
+            return "pipeline"
+        return "tool"
+
     def _extract_employee(self, topic: str, event: dict) -> str | None:
-        if topic == "logs":
-            return event.get("employee_uid")
-        elif topic in ("emails", "messages"):
-            return event.get("sender_uid")
-        elif topic == "calls":
-            return event.get("caller_uid")
-        return None
+        return event_employee(topic, event)
+
+    @staticmethod
+    def _event_content(topic: str, event: dict) -> str:
+        if topic == "emails":
+            return f"Subject: {event.get('subject', '')}\n{event.get('body', '')}"
+        if topic == "messages":
+            return event.get("text", "")
+        if topic == "calls":
+            return event.get("transcript", "")
+        return event.get("details", "")
 
     def _build_title(self, correlation: CorrelationResult) -> str:
         """Generate incident title from the most significant pattern."""
@@ -189,7 +229,9 @@ class IncidentManager:
             "timeline": timeline,
             "event_summary": {
                 "type": event.get("event_type", topic),
-                "details": event.get("details", event.get("subject", event.get("text", "")[:200])),
+                # Full content of the triggering event; the prompt builder fences
+                # and truncates it as untrusted data.
+                "details": self._event_content(topic, event),
                 "risk_score": event.get("risk_score", 0),
                 "timestamp": event.get("timestamp", ""),
             },

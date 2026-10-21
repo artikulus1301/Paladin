@@ -6,15 +6,23 @@ Implements Persistent Planning Pattern + Self-Correction Loop.
 from __future__ import annotations
 import json, uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Callable
 import structlog
 
 from paladin.config.settings import settings
+from paladin.forensic.correlation_engine import CorrelationEngine
 from paladin.forensic.mcp_types import MCPRequest
 from paladin.forensic.prompts import (
     build_planning_prompt, build_execution_prompt,
     build_self_check_prompt, format_plan_for_prompt,
 )
+from paladin.llm.prompts import extract_json_object
+
+# Evidence file classification for parameter inference
+_MEMORY_EXT = (".raw", ".mem", ".vmem", ".dmp", ".lime", ".bin")
+_DISK_EXT = (".img", ".dd", ".e01", ".raw", ".vmdk", ".001")
+_PCAP_EXT = (".pcap", ".pcapng", ".cap")
+_PATH_KEYS = ("path", "image_path", "memory_image", "pcap_path")
 
 log = structlog.get_logger(__name__)
 
@@ -33,6 +41,9 @@ class ForensicPlanManager:
         self._sandbox = sandbox
         self._pg = pg_store
         self._broadcast = broadcast_fn
+        # Per-plan runtime state: evidence file list and PIDs flagged by memory analysis
+        self._evidence: dict[str, list[str]] = {}
+        self._suspicious_pids: dict[str, list[int]] = {}
 
     async def create_plan(self, incident_id: str,
                           initial_context: dict) -> str:
@@ -46,6 +57,7 @@ class ForensicPlanManager:
             listing, _ = await self._sandbox.exec_in_sandbox(
                 container, ["find", "/evidence", "-maxdepth", "3", "-type", "f"])
             evidence_listing = listing[:2000]
+            self._evidence[plan_id] = [l.strip() for l in listing.splitlines() if l.strip()]
 
         # Build planning prompt
         sys_prompt, user_prompt = build_planning_prompt(
@@ -57,8 +69,7 @@ class ForensicPlanManager:
             evidence_listing=evidence_listing)
 
         # Ask Qwen for investigation plan
-        from paladin.llm.ollama_client import OllamaClient
-        response = await self._llm.generate(user_prompt, system=sys_prompt)
+        response = await self._llm.generate(user_prompt, system=sys_prompt, json_mode=True)
         plan_data = self._parse_json_response(response)
 
         # Create plan node in Neo4j
@@ -81,6 +92,7 @@ class ForensicPlanManager:
                 "description": item.get("description", ""),
                 "status": "PENDING",
                 "mcp_function": item.get("mcp_function", ""),
+                "parameters": item.get("parameters") if isinstance(item.get("parameters"), dict) else {},
                 "expected_finding": item.get("expected_finding", ""),
                 "iteration_added": 0,
             })
@@ -150,11 +162,15 @@ class ForensicPlanManager:
                 item_id, "BLOCKED", blocked_reason="No sandbox container")
             return None
 
-        # Build MCP request from plan item
-        params = next_item.get("parameters", {})
-        if not params and mcp_function:
-            # Infer basic params from description
-            params = self._infer_params(mcp_function, plan)
+        # Build MCP request: LLM-proposed parameters, with paths that are not in the
+        # evidence listing (hallucinated files) replaced by inferred ones.
+        # The ForensicActionVerifier still vets everything inside execute().
+        try:
+            llm_params = json.loads(next_item.get("parameters_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            llm_params = {}
+        params = self._build_params(mcp_function, plan_id,
+                                    llm_params if isinstance(llm_params, dict) else {})
 
         request = MCPRequest(
             function=mcp_function,
@@ -181,8 +197,15 @@ class ForensicPlanManager:
             tool_name=mcp_function,
             tool_output=tool_output)
 
-        llm_response = await self._llm.generate(user_prompt, system=sys_prompt)
+        llm_response = await self._llm.generate(user_prompt, system=sys_prompt, json_mode=True)
         analysis = self._parse_json_response(llm_response)
+
+        # Remember suspicious PIDs so later module analysis targets real processes
+        if mcp_function == "analyze_process_list" and mcp_response.result:
+            pids = [p.get("pid") for p in mcp_response.result.get("suspicious_processes", [])
+                    if isinstance(p, dict) and p.get("pid")]
+            if pids:
+                self._suspicious_pids[plan_id] = pids
 
         # Create Finding
         finding_id = f"F-{uuid.uuid4().hex[:8]}"
@@ -197,6 +220,7 @@ class ForensicPlanManager:
             "confidence": analysis.get("confidence", 50),
             "verified": False,
             "evidence_quote": analysis.get("evidence_quote", ""),
+            "simulated": mcp_response.simulated,
             "iteration_number": plan.get("iteration_count", 0),
         }
         await self._neo4j.create_finding(finding_data)
@@ -262,7 +286,7 @@ class ForensicPlanManager:
             evidence_quote=finding_data.get("evidence_quote", ""),
             previous_findings=prev)
 
-        response = await self._llm.generate(user_prompt, system=sys_prompt)
+        response = await self._llm.generate(user_prompt, system=sys_prompt, json_mode=True)
         check = self._parse_json_response(response)
 
         if not check.get("contradiction_detected"):
@@ -331,7 +355,15 @@ class ForensicPlanManager:
 
         await self._neo4j.update_plan_status(plan_id, status, completion_reason=reason)
 
-        # Destroy sandbox
+        # Run deterministic correlation before finalizing
+        try:
+            engine = CorrelationEngine(self._neo4j, self._broadcast)
+            await engine.run(plan_id)
+        except Exception as e:
+            log.error("correlation_engine_failed", error=str(e))
+
+        # Sandbox is destroyed at the end of run_full_investigation,
+        # but we also keep this check just in case.
         incident_id = plan.get("incident_id", "")
         if incident_id:
             try:
@@ -361,6 +393,11 @@ class ForensicPlanManager:
             except Exception as e:
                 log.error("forensic_summary_generation_failed", error=str(e))
                 summary_text = "Investigation completed. Findings:\n" + findings_text
+
+        simulated = sum(1 for f in findings if f.get("simulated"))
+        if simulated:
+            summary_text = (f"[DEMO FIXTURES: {simulated}/{total} findings are based on canned "
+                            f"data, not real tool output]\n{summary_text}")
 
         if incident_id:
             await self._neo4j.update_incident(incident_id, {
@@ -395,56 +432,100 @@ class ForensicPlanManager:
         return False
 
     async def run_full_investigation(self, incident_id: str,
-                                     context: dict, evidence_path: str) -> str:
+                                     context: dict, evidence_path: str) -> str | None:
         """Run a complete Pipeline Mode investigation end-to-end."""
-        # 1. Create sandbox
-        container = await self._sandbox.create_sandbox(
-            incident_id, evidence_path)
+        plan_id = None
+        try:
+            # 1. Create sandbox
+            await self._sandbox.create_sandbox(incident_id, evidence_path)
 
-        # 2. Create plan
-        plan_id = await self.create_plan(incident_id, context)
+            # 2. Create plan
+            plan_id = await self.create_plan(incident_id, context)
 
-        # 3. Execute all steps
-        max_steps = 20  # Safety limit
-        for _ in range(max_steps):
-            result = await self.execute_next_item(plan_id)
-            if result is None:
-                break  # Plan finalized or all items done
+            # 3. Execute all steps
+            max_steps = 20  # Safety limit
+            for _ in range(max_steps):
+                result = await self.execute_next_item(plan_id)
+                if result is None:
+                    break  # Plan finalized or all items done
+            else:
+                await self.finalize_plan(plan_id, "step_limit_reached")
+        except Exception as e:
+            log.error("forensic_investigation_failed", incident_id=incident_id,
+                      plan_id=plan_id, error=str(e))
+            if plan_id:
+                await self._neo4j.update_plan_status(plan_id, "FAILED",
+                                                     completion_reason=str(e)[:300])
+            raise
+        finally:
+            try:
+                await self._sandbox.destroy_sandbox(incident_id)
+            except Exception as e:
+                log.error("sandbox_cleanup_failed", error=str(e))
+            if plan_id:
+                self._evidence.pop(plan_id, None)
+                self._suspicious_pids.pop(plan_id, None)
 
         return plan_id
 
-    def _infer_params(self, function: str, plan: dict) -> dict:
-        """Infer basic parameters for an MCP function from plan context."""
-        base = {"path": "/evidence/", "image_path": "/evidence/disk.img",
-                "memory_image": "/evidence/memory.raw"}
+    def _build_params(self, function: str, plan_id: str, llm_params: dict) -> dict:
+        """Merge LLM-proposed parameters with inferred defaults."""
+        inferred = self._infer_params(function, plan_id)
+        params = {**inferred, **llm_params}
+        # Drop keys the target function doesn't take (e.g. "path" for parse_pcap)
+        accepted = self._mcp.get_function_params(function) if self._mcp else None
+        if accepted is not None:
+            dropped = sorted(set(params) - accepted)
+            if dropped:
+                log.info("forensic_params_dropped", function=function, dropped=dropped)
+            params = {k: v for k, v in params.items() if k in accepted}
+        listing = self._evidence.get(plan_id)
+        if listing:
+            for key in _PATH_KEYS:
+                value = params.get(key)
+                if (key in inferred and isinstance(value, str) and value not in listing
+                        and value.rstrip("/") != "/evidence"):
+                    log.info("forensic_param_replaced", function=function, key=key,
+                             proposed=value, used=inferred[key])
+                    params[key] = inferred[key]
+        return params
+
+    def _infer_params(self, function: str, plan_id: str) -> dict:
+        """Infer parameters for an MCP function from the evidence actually present."""
+        files = self._evidence.get(plan_id, [])
+
+        def pick(exts: tuple[str, ...], default: str, keywords: tuple[str, ...] = ()) -> str:
+            for f in files:
+                low = f.lower()
+                if low.endswith(exts) and (not keywords or any(k in low for k in keywords)):
+                    return f
+            for f in files:
+                if f.lower().endswith(exts):
+                    return f
+            return default
+
+        memory = pick(_MEMORY_EXT, "/evidence/memory.raw", ("mem", "ram", "vmem"))
+        disk = pick(_DISK_EXT, "/evidence/disk.img", ("disk", "img", "dd", "e01"))
+        pcap = pick(_PCAP_EXT, "/evidence/capture.pcap")
         fn = function.lower()
         if "module" in fn:
-            # extract_loaded_modules needs a pid — try to get from plan context
-            # default to known suspicious svchost pid
-            return {"memory_image": base["memory_image"], "pid": 6404}
+            pids = self._suspicious_pids.get(plan_id) or [4]
+            return {"memory_image": memory, "pid": pids[0]}
         if "process" in fn or "network" in fn:
-            return {"memory_image": base["memory_image"]}
-        if "mft" in fn or "prefetch" in fn or "registry" in fn:
-            return {"image_path": base["image_path"]}
+            return {"memory_image": memory}
+        if "mft" in fn or "prefetch" in fn or "registry" in fn or "browser" in fn:
+            return {"image_path": disk}
         if "pcap" in fn:
-            return {"pcap_path": "/evidence/capture.pcap"}
+            return {"pcap_path": pcap}
         if "hash" in fn:
-            return {"path": base["path"], "algorithm": "sha256"}
-        return {"path": base["path"]}
+            return {"path": files[0] if files else "/evidence/", "algorithm": "sha256"}
+        return {"path": files[0] if files else "/evidence/"}
 
     @staticmethod
     def _parse_json_response(response: str) -> dict:
-        """Extract JSON from LLM response, handling markdown fences."""
-        text = response.strip()
-        # Strip markdown code fences
-        if "```json" in text:
-            text = text.split("```json", 1)[1]
-            text = text.split("```", 1)[0]
-        elif "```" in text:
-            text = text.split("```", 1)[1]
-            text = text.split("```", 1)[0]
-        try:
-            return json.loads(text.strip())
-        except json.JSONDecodeError:
-            log.warning("json_parse_failed", response=text[:200])
-            return {"working_plan": text, "todo_items": []}
+        """Extract JSON from LLM response, handling markdown fences and <think> blocks."""
+        data = extract_json_object(response)
+        if data is None:
+            log.warning("json_parse_failed", response=(response or "")[:200])
+            return {"working_plan": response, "todo_items": []}
+        return data

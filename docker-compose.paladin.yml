@@ -123,7 +123,7 @@ services:
       - "8888:8888"
     environment:
       - PALADIN_MODE=dummy
-      - NEO4J_URI=bolt+ssc://neo4j:7687
+      - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme123}
       - POSTGRES_DSN=postgresql://paladin:paladin@postgres:5432/paladin_archive?sslmode=require
@@ -132,6 +132,8 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - DASHBOARD_HOST=0.0.0.0
       - DASHBOARD_PORT=8888
+      - DASHBOARD_ADMIN_PASSWORD=${DASHBOARD_ADMIN_PASSWORD:-admin}
+      - DASHBOARD_SECRET=${DASHBOARD_SECRET:-paladin-secret-change-me}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SAP_SCORE_THRESHOLD=${SAP_SCORE_THRESHOLD:-0.7}
       - DUMMY_EVENTS_PER_MIN=${DUMMY_EVENTS_PER_MIN:-10}

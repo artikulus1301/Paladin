@@ -6,6 +6,7 @@ and all CRUD operations for the security graph.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional, Any
 
 import structlog
@@ -353,15 +354,23 @@ class Neo4jClient:
 
     async def update_incident(self, incident_id: str, updates: dict) -> None:
         """Update incident fields (status, llm_summary, action, operator_note)."""
-        set_clauses = ", ".join(f"i.{k} = ${k}" for k in updates)
-        updates["iid"] = incident_id
+        allowed_keys = {"status", "action_status", "operator_note", "llm_summary",
+                        "action_proposed", "severity", "requires_confirmation",
+                        "forensic_mode"}
+        safe_updates = {k: v for k, v in updates.items() if k in allowed_keys}
+        
+        if not safe_updates:
+            return
+            
+        set_clauses = ", ".join(f"i.{k} = ${k}" for k in safe_updates)
+        safe_updates["iid"] = incident_id
         async with self._driver.session() as session:
             await session.run(
                 f"""
                 MATCH (i:Incident {{incident_id: $iid}})
                 SET {set_clauses}, i.updated_at = datetime()
                 """,
-                **updates,
+                **safe_updates,
             )
 
     async def find_similar_open_incident(self, title: str, employee_uids: list[str]) -> str | None:
@@ -478,7 +487,7 @@ class Neo4jClient:
                 """
                 MATCH (i:Incident)
                 WHERE i.status IN ["open", "investigating"]
-                   OR i.action_status IN ["pending", "auto_executed_timeout"]
+                   OR i.action_status IN ["pending", "awaiting_operator", "auto_executed_timeout"]
                 OPTIONAL MATCH (e:Employee)-[:INVOLVED_IN]->(i)
                 RETURN i.incident_id AS incident_id,
                        i.title AS title,
@@ -486,12 +495,14 @@ class Neo4jClient:
                        i.score AS score,
                        i.status AS status,
                        toString(i.created_at) AS created_at,
+                       i.created_at AS raw_created_at,
                        i.llm_summary AS llm_summary,
                        i.action_proposed AS action_proposed,
                        i.action_status AS action_status,
                        i.operator_note AS operator_note,
+                       coalesce(i.requires_confirmation, false) AS requires_confirmation,
                        collect(DISTINCT e.full_name) AS involved
-                ORDER BY i.created_at DESC
+                ORDER BY raw_created_at DESC
                 LIMIT $limit
                 """,
                 limit=limit,
@@ -582,14 +593,55 @@ class Neo4jClient:
                        i.score AS score,
                        i.action_proposed AS action_proposed,
                        i.llm_summary AS llm_summary,
+                       coalesce(i.requires_confirmation, false) AS requires_confirmation,
                        toString(i.updated_at) AS updated_at,
+                       i.updated_at AS raw_updated_at,
                        collect(DISTINCT e.uid) AS involved_uids,
                        collect(DISTINCT e.full_name) AS involved_names
-                ORDER BY i.updated_at ASC
+                ORDER BY raw_updated_at ASC
                 """,
                 timeout=timeout_seconds,
             )
             return await result.data()
+
+    async def get_incident_for_action(self, incident_id: str) -> dict | None:
+        """Fetch an incident in the shape AutoExecutor expects (for operator approval)."""
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (i:Incident {incident_id: $iid})
+                OPTIONAL MATCH (e:Employee)-[:INVOLVED_IN]->(i)
+                RETURN i.incident_id AS incident_id,
+                       i.title AS title,
+                       i.severity AS severity,
+                       i.score AS score,
+                       i.status AS status,
+                       i.action_proposed AS action_proposed,
+                       i.action_status AS action_status,
+                       coalesce(i.requires_confirmation, false) AS requires_confirmation,
+                       collect(DISTINCT e.uid) AS involved_uids,
+                       collect(DISTINCT e.full_name) AS involved_names
+                """,
+                iid=incident_id,
+            )
+            record = await result.single()
+            return dict(record) if record and record["incident_id"] else None
+
+    async def get_incident_brief(self, incident_id: str) -> dict | None:
+        """Severity/score/state of an incident plus whether a forensic plan exists."""
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (i:Incident {incident_id: $iid})
+                OPTIONAL MATCH (i)-[:HAS_FORENSIC_PLAN]->(p:ForensicPlan)
+                RETURN i.severity AS severity, i.score AS score,
+                       i.action_status AS action_status,
+                       count(p) > 0 AS has_plan
+                """,
+                iid=incident_id,
+            )
+            record = await result.single()
+            return dict(record) if record else None
 
     async def update_employee_flag(
         self,
@@ -659,6 +711,7 @@ class Neo4jClient:
                     recheck_reason: $recheck_reason,
                     iteration_added: $iteration_added,
                     mcp_function:   $mcp_function,
+                    parameters_json: $parameters_json,
                     created_at:     datetime()
                 })
                 WITH t
@@ -674,6 +727,7 @@ class Neo4jClient:
                 recheck_reason=item.get("recheck_reason", ""),
                 iteration_added=item.get("iteration_added", 0),
                 mcp_function=item.get("mcp_function", ""),
+                parameters_json=json.dumps(item.get("parameters") or {}, default=str),
             )
 
     async def update_todo_status(self, item_id: str, status: str,
@@ -710,6 +764,7 @@ class Neo4jClient:
                     verified:        $verified,
                     verification_method: "",
                     evidence_quote:  $evidence_quote,
+                    simulated:       $simulated,
                     iteration_number: $iteration_number,
                     created_at:      datetime()
                 })
@@ -730,6 +785,7 @@ class Neo4jClient:
                 confidence=finding.get("confidence", 50),
                 verified=finding.get("verified", False),
                 evidence_quote=finding.get("evidence_quote", ""),
+                simulated=finding.get("simulated", False),
                 iteration_number=finding.get("iteration_number", 0),
             )
         return finding["finding_id"]
@@ -854,7 +910,8 @@ class Neo4jClient:
             result = await session.run(
                 """
                 MATCH (i:Incident {incident_id: $iid})-[:HAS_FORENSIC_PLAN]->(p:ForensicPlan)
-                WHERE NOT p.is_version
+                // is_version is only set on snapshots; on live plans it is null
+                WHERE coalesce(p.is_version, false) = false
                 RETURN p.plan_id AS plan_id
                 ORDER BY p.created_at DESC LIMIT 1
                 """, iid=incident_id)

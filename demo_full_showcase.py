@@ -39,7 +39,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ── Path to Natalie Romanoff evidence files ──────────────────────────────────
 EVIDENCE_PATH = r"c:\Users\Lenovo\Downloads\win7-32-nromanoff-10.3.58.5"
 
-DASHBOARD_URL = "https://localhost:8888"
+USE_HTTPS = os.path.exists("key.pem") and os.path.exists("cert.pem")
+DASHBOARD_URL = "https://localhost:8888" if USE_HTTPS else "http://localhost:8888"
 API = DASHBOARD_URL + "/api"
 
 # ── Terminal Color Palette ───────────────────────────────────────────────────
@@ -182,7 +183,6 @@ def start_paladin(ollama_url: str, operator_timeout: int) -> subprocess.Popen:
     env["FORENSIC_EVIDENCE_BASE"] = EVIDENCE_PATH
     env["PALADIN_MODE"] = "dummy"
     env["LOG_LEVEL"] = "WARNING"   # Only warnings/errors in stdout
-    env["TELEGRAM_TOKEN"] = ""     # Disable telegram bot to avoid validation errors
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "paladin.main"],
@@ -487,6 +487,8 @@ async def phase_forensic(ollama_url: str, use_evidence: bool = True) -> None:
     os.environ["OLLAMA_BASE_URL"] = ollama_url
     os.environ["FORENSIC_EVIDENCE_BASE"] = EVIDENCE_PATH if use_evidence else "/tmp/demo_evidence"
     os.environ["OLLAMA_TIMEOUT"] = "600"
+    # The nromanoff case uses canned SIFT results (marked simulated in reports)
+    os.environ["FORENSIC_DEMO_FIXTURES"] = "true"
 
     sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 

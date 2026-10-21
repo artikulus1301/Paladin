@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 from datetime import datetime, timezone
 from enum import Enum
@@ -73,11 +74,12 @@ _SHELL_INJECTION_PATTERNS = [
     re.compile(r"\bpython\b"),            # python interpreter
     re.compile(r"\bperl\b"),              # perl interpreter
     re.compile(r"\bruby\b"),              # ruby interpreter
+    re.compile(r"[\x00\r\n]"),            # NUL / newline smuggling
 ]
 
 # Path traversal patterns
 _PATH_TRAVERSAL_PATTERNS = [
-    re.compile(r"\.\.(/|\\)"),            # ../  or ..\
+    re.compile(r"(^|[/\\])\.\.([/\\]|$)"),  # any ".." segment, incl. a trailing "/.."
     re.compile(r"\.\.%2[fF]"),            # URL-encoded ../
     re.compile(r"%2[eE]%2[eE]"),          # double URL-encoded ..
 ]
@@ -241,7 +243,7 @@ class ForensicActionVerifier:
         # Check if writing to /output (requires approval)
         paths = self._extract_paths(parameters)
         for p in paths:
-            if p.startswith("/output/"):
+            if self._within(p, "/output/"):
                 return VerifierCategory.REQUIRES_APPROVAL
 
         # Default: FORBIDDEN (explicit allow, implicit deny)
@@ -271,11 +273,21 @@ class ForensicActionVerifier:
 
     def _check_path_boundaries(self, parameters: dict) -> str | None:
         """Ensure all path-like parameters are within allowed roots."""
-        paths = self._extract_paths(parameters)
-        for p in paths:
-            if not any(p.startswith(root) for root in _ALLOWED_PATH_ROOTS):
+        for p in self._extract_paths(parameters):
+            if not any(self._within(p, root) for root in _ALLOWED_PATH_ROOTS):
                 return p
         return None
+
+    @staticmethod
+    def _within(path: str, root: str) -> bool:
+        """True if `path`, after normalization, is `root` itself or lies below it."""
+        if "\\" in path:
+            return False
+        norm = posixpath.normpath(path)
+        if norm.startswith("//"):
+            return False
+        root = root.rstrip("/")
+        return norm == root or norm.startswith(root + "/")
 
     @staticmethod
     def _extract_paths(parameters: dict) -> list[str]:
@@ -288,10 +300,10 @@ class ForensicActionVerifier:
                 paths.append(value)
         return paths
 
-    @staticmethod
-    def _is_read_safe_path(path: str) -> bool:
+    @classmethod
+    def _is_read_safe_path(cls, path: str) -> bool:
         """Check if path is in a read-safe location."""
-        return path.startswith("/evidence/") or path.startswith("/cases/")
+        return cls._within(path, "/evidence/") or cls._within(path, "/cases/")
 
     @staticmethod
     def _hash_params(parameters: dict) -> str:

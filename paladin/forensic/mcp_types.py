@@ -264,3 +264,5 @@ class MCPResponse(BaseModel):
     error: Optional[str] = None
     execution_time_ms: int = 0
     raw_output_hash: str = ""
+    # True when the result came from demo fixtures instead of a real tool run
+    simulated: bool = False

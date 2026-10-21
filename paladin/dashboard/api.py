@@ -14,15 +14,20 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-from paladin.dashboard.auth import create_access_token, verify_token, verify_ws_token
+from paladin.dashboard.auth import (
+    check_credentials, create_access_token, login_locked, record_login_failure,
+    reset_login_failures, verify_token, verify_ws_token,
+)
 
 log = structlog.get_logger(__name__)
 
-app = FastAPI(title="Paladin Security Dashboard", version="0.1.0")
+app = FastAPI(title="Paladin Security Dashboard", version="2.1.0")
+
+WS_AUTH_TIMEOUT_SECONDS = 10
 
 # ── Global references (set by main.py at startup) ────────────────────────────
 _neo4j = None
@@ -31,17 +36,21 @@ _connected_ws: list[WebSocket] = []
 _auto_exec = None
 _forensic_plan_mgr = None
 _hallucination_tracker = None
+_approval_broker = None
 _demo_started = False
 
 
 def init_dashboard(neo4j_client, event_bus: asyncio.Queue, auto_exec=None,
-                   forensic_plan_mgr=None, hallucination_tracker=None):
+                   forensic_plan_mgr=None, hallucination_tracker=None,
+                   approval_broker=None):
     global _neo4j, _event_bus, _auto_exec, _forensic_plan_mgr, _hallucination_tracker
+    global _approval_broker
     _neo4j = neo4j_client
     _event_bus = event_bus
     _auto_exec = auto_exec
     _forensic_plan_mgr = forensic_plan_mgr
     _hallucination_tracker = hallucination_tracker
+    _approval_broker = approval_broker
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -62,41 +71,77 @@ class LoginRequest(BaseModel):
     password: str
 
 @app.post("/api/login")
-async def login(req: LoginRequest):
-    # Dummy auth for demo
-    if req.username == "admin" and req.password == "admin":
+async def login(req: LoginRequest, request: Request):
+    client = request.client.host if request.client else "unknown"
+    if login_locked(client):
+        log.warning("login_locked", client=client)
+        raise HTTPException(status_code=429, detail="Too many failed attempts, try again later")
+    if check_credentials(req.username, req.password):
+        reset_login_failures(client)
         token = create_access_token({"sub": req.username})
         return {"access_token": token, "token_type": "bearer"}
+    record_login_failure(client)
+    log.warning("login_failed", client=client, username=req.username)
     raise HTTPException(status_code=401, detail="Incorrect username or password")
 
 
 # ── Incidents ─────────────────────────────────────────────────────────────────
 
+# Action states in which the proposed action has not been enforced yet
+_UNEXECUTED_STATES = {"pending", "awaiting_operator"}
+
+
 @app.get("/api/incidents")
 async def get_incidents(
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="Filter by status or action_status"),
     limit: int = Query(50, le=200),
     user: dict = Depends(verify_token),
 ):
     if not _neo4j:
         raise HTTPException(503, "Neo4j not connected")
     incidents = await _neo4j.get_open_incidents(limit=limit)
+    if status:
+        incidents = [i for i in incidents
+                     if status in (i.get("status"), i.get("action_status"))]
     return {"incidents": incidents, "count": len(incidents)}
 
 
 @app.post("/api/incidents/action")
 async def handle_incident_action(action: IncidentAction, user: dict = Depends(verify_token)):
+    """
+    approve → the proposed action is EXECUTED now (if it hasn't been already)
+    reject  → the proposed action is cancelled and never executed
+    """
     if not _neo4j:
         raise HTTPException(503, "Neo4j not connected")
     if action.decision not in ("approve", "reject"):
         raise HTTPException(400, "Decision must be 'approve' or 'reject'")
 
-    new_status = "resolved" if action.decision == "approve" else "rejected"
-    await _neo4j.update_incident(action.incident_id, {
-        "action_status": action.decision,
-        "status": new_status,
-        "operator_note": action.reason,
-    })
+    incident = await _neo4j.get_incident_for_action(action.incident_id)
+    if not incident:
+        raise HTTPException(404, f"Incident {action.incident_id} not found")
+
+    operator = user.get("sub", "operator")
+    execution_note = None
+    if action.decision == "approve":
+        if incident.get("action_status") in _UNEXECUTED_STATES:
+            if not _auto_exec:
+                raise HTTPException(503, "AutoExecutor not available")
+            execution_note = await _auto_exec.execute(incident, by_operator=operator)
+        new_status = "resolved"
+        updates = {"status": new_status,
+                   "operator_note": f"[{operator}] approved: {action.reason}"
+                                    + (f" | {execution_note}" if execution_note else "")}
+    else:
+        new_status = "rejected"
+        updates = {"status": new_status,
+                   "operator_note": f"[{operator}] rejected: {action.reason}"}
+        if incident.get("action_status") in _UNEXECUTED_STATES:
+            updates["action_status"] = "rejected"
+
+    await _neo4j.update_incident(action.incident_id, updates)
+    log.info("operator_decision", incident_id=action.incident_id,
+             decision=action.decision, operator=operator, executed=execution_note is not None)
 
     # Broadcast to WebSocket clients
     await _broadcast({
@@ -106,7 +151,8 @@ async def handle_incident_action(action: IncidentAction, user: dict = Depends(ve
         "decision": action.decision,
     })
 
-    return {"ok": True, "incident_id": action.incident_id, "status": new_status}
+    return {"ok": True, "incident_id": action.incident_id, "status": new_status,
+            "executed": execution_note is not None, "execution_note": execution_note}
 
 
 # ── Action Log ────────────────────────────────────────────────────────────────
@@ -135,10 +181,20 @@ async def get_incident_graph(incident_id: str, user: dict = Depends(verify_token
 
 # ── Scenario Trigger (for demo/testing) ───────────────────────────────────────
 
+SCENARIOS = {
+    "logs": {"brute_force", "data_exfiltration", "insider_threat", "privilege_escalation"},
+    "emails": {"phishing", "data_leak_email", "social_engineering", "external_exfil"},
+    "messages": {"insider_chat", "credential_sharing", "competitor_contact"},
+    "calls": {"data_theft_call", "insider_recruitment", "bribery_call"},
+}
+
+
 @app.post("/api/scenario")
 async def trigger_scenario(req: ScenarioRequest, user: dict = Depends(verify_token)):
     if not _event_bus:
         raise HTTPException(503, "Event bus not initialized")
+    if req.scenario not in SCENARIOS.get(req.source, set()):
+        raise HTTPException(400, f"Scenario '{req.scenario}' does not exist for source '{req.source}'")
     # Put scenario request on the event bus for the orchestrator to pick up
     await _event_bus.put({
         "type": "scenario_trigger",
@@ -168,19 +224,23 @@ async def start_demo(user: dict = Depends(verify_token)):
 class ModeRequest(BaseModel):
     mode: str
 
+@app.get("/api/config/mode")
+async def get_mode(user: dict = Depends(verify_token)):
+    if not _auto_exec:
+        raise HTTPException(503, "AutoExecutor not available")
+    return {"mode": _auto_exec.mode, "timeout": _auto_exec.timeout}
+
+
 @app.post("/api/config/mode")
 async def set_mode(req: ModeRequest, user: dict = Depends(verify_token)):
     if not _auto_exec:
         raise HTTPException(503, "AutoExecutor not available")
-    
-    if req.mode == "autonomous":
-        _auto_exec.set_timeout(0)
-    elif req.mode == "human_in_loop":
-        _auto_exec.set_timeout(60)
-    else:
+    try:
+        _auto_exec.set_mode(req.mode)
+    except ValueError:
         raise HTTPException(400, "Invalid mode")
-        
-    return {"ok": True, "mode": req.mode, "timeout": _auto_exec._timeout}
+    log.info("mode_changed", mode=req.mode, operator=user.get("sub"))
+    return {"ok": True, "mode": _auto_exec.mode, "timeout": _auto_exec.timeout}
 
 
 # ── System Status ─────────────────────────────────────────────────────────────
@@ -200,6 +260,8 @@ async def system_status(user: dict = Depends(verify_token)):
         "neo4j": "online" if neo4j_ok else "offline",
         "websocket_clients": len(_connected_ws),
         "forensic_enabled": _forensic_plan_mgr is not None,
+        "mode": _auto_exec.mode if _auto_exec else None,
+        "pending_forensic_approvals": len(_approval_broker.pending()) if _approval_broker else 0,
         "demo_started": _demo_started,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -241,11 +303,32 @@ async def get_accuracy_report(plan_id: str, user: dict = Depends(verify_token)):
     return report
 
 
-@app.post("/api/forensic/plan/{plan_id}/approve")
-async def approve_forensic_action(plan_id: str, user: dict = Depends(verify_token)):
-    """Approve a pending forensic action."""
-    # For now, just acknowledge — real approval handled via WebSocket
-    return {"ok": True, "plan_id": plan_id, "action": "approved"}
+class ApprovalDecisionRequest(BaseModel):
+    decision: str  # "approve" or "deny"
+
+
+@app.get("/api/forensic/approvals")
+async def list_forensic_approvals(user: dict = Depends(verify_token)):
+    """MCP calls classified REQUIRES_APPROVAL that are waiting for an operator."""
+    if not _approval_broker:
+        return {"pending": []}
+    return {"pending": _approval_broker.pending()}
+
+
+@app.post("/api/forensic/approvals/{request_id}")
+async def decide_forensic_approval(request_id: str, req: ApprovalDecisionRequest,
+                                   user: dict = Depends(verify_token)):
+    """Approve or deny a parked MCP call. Unanswered requests auto-deny on timeout."""
+    if not _approval_broker:
+        raise HTTPException(503, "Approval broker not available")
+    if req.decision not in ("approve", "deny"):
+        raise HTTPException(400, "Decision must be 'approve' or 'deny'")
+    approved = req.decision == "approve"
+    if not _approval_broker.resolve(request_id, approved, user.get("sub", "operator")):
+        raise HTTPException(404, "Approval request not found or already resolved")
+    await _broadcast({"type": "forensic_approval_resolved", "request_id": request_id,
+                      "approved": approved, "reason": "operator"})
+    return {"ok": True, "request_id": request_id, "approved": approved}
 
 
 # ── WebSocket for live updates ────────────────────────────────────────────────
@@ -253,18 +336,18 @@ async def approve_forensic_action(plan_id: str, user: dict = Depends(verify_toke
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    
-    # Wait for authentication message
-    auth_data = await ws.receive_text()
-    token_valid = False
-    if auth_data.startswith("Bearer "):
-        token = auth_data.split(" ")[1]
-        if verify_ws_token(token):
-            token_valid = True
-            
-    if not token_valid:
+
+    # First message must be "Bearer <token>"; unauthenticated sockets are dropped
+    try:
+        auth_data = await asyncio.wait_for(ws.receive_text(), timeout=WS_AUTH_TIMEOUT_SECONDS)
+    except (asyncio.TimeoutError, WebSocketDisconnect):
+        await _safe_close(ws)
+        return
+
+    token = auth_data[len("Bearer "):] if auth_data.startswith("Bearer ") else ""
+    if not token or not verify_ws_token(token):
         await ws.send_text("error: Unauthorized")
-        await ws.close()
+        await _safe_close(ws)
         return
 
     _connected_ws.append(ws)
@@ -276,21 +359,39 @@ async def websocket_endpoint(ws: WebSocket):
             if data == "ping":
                 await ws.send_text("pong")
     except WebSocketDisconnect:
-        _connected_ws.remove(ws)
+        pass
+    except Exception as e:
+        log.warning("ws_error", error=str(e))
+    finally:
+        if ws in _connected_ws:
+            _connected_ws.remove(ws)
         log.info("ws_disconnected", total=len(_connected_ws))
+
+
+async def _safe_close(ws: WebSocket) -> None:
+    try:
+        await ws.close()
+    except Exception:
+        pass
 
 
 async def _broadcast(message: dict):
     """Send message to all connected WebSocket clients."""
     text = json.dumps(message, default=str)
     disconnected = []
-    for ws in _connected_ws:
+    for ws in list(_connected_ws):
         try:
             await ws.send_text(text)
         except Exception:
             disconnected.append(ws)
     for ws in disconnected:
-        _connected_ws.remove(ws)
+        if ws in _connected_ws:
+            _connected_ws.remove(ws)
+
+
+async def broadcast_event(message: dict):
+    """Public API for modules that emit typed events ({"type": ..., ...}) as-is."""
+    await _broadcast(message)
 
 
 async def broadcast_incident(incident_data: dict):

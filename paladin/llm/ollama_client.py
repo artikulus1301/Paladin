@@ -29,13 +29,16 @@ class OllamaClient:
             await self._session.close()
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=10))
-    async def generate(self, prompt: str, system: str | None = None) -> str:
+    async def generate(self, prompt: str, system: str | None = None,
+                       json_mode: bool = False) -> str:
+        """Generate a completion. json_mode=True constrains Ollama output to valid JSON."""
         payload = {
             "model": settings.ollama_model,
             "prompt": prompt,
             "system": system or "",
             "stream": False,
             "think": False,   # Disable Qwen3 chain-of-thought reasoning (massive speedup)
+            "keep_alive": settings.ollama_keep_alive,
             "options": {
                 "temperature": 0.3,
                 "top_p": 0.9,
@@ -43,6 +46,8 @@ class OllamaClient:
                 "num_ctx": 4096,
             },
         }
+        if json_mode:
+            payload["format"] = "json"
         url = f"{settings.ollama_base_url}/api/generate"
         async with self._session.post(url, json=payload) as resp:
             resp.raise_for_status()
@@ -56,6 +61,7 @@ class OllamaClient:
             "system": system or "",
             "stream": True,
             "think": False,   # Disable Qwen3 chain-of-thought reasoning
+            "keep_alive": settings.ollama_keep_alive,
             "options": {"temperature": 0.3, "top_p": 0.9, "num_ctx": 4096},
         }
         url = f"{settings.ollama_base_url}/api/generate"

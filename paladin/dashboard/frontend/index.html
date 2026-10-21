@@ -526,25 +526,43 @@ body {
       <h3 style="width: 100%; margin-bottom: 8px; color: white;">🧪 Scenario Generator</h3>
       <p style="width: 100%; margin-bottom: 16px; color: var(--muted); font-size: 14px;">Inject synthetic events into the pipeline to test autonomous response capabilities.</p>
       
-      <select id="scenSource">
-        <option value="logs">System Logs</option>
-        <option value="emails">Email Traffic</option>
-        <option value="messages">Corporate Chat</option>
-        <option value="calls">Voice Transcripts</option>
-      </select>
+      <!-- value = "source:scenario" — the channel follows from the scenario -->
       <select id="scenName">
-        <option value="brute_force">Brute Force Attack</option>
-        <option value="data_exfiltration">Data Exfiltration</option>
-        <option value="insider_threat">Insider Threat</option>
-        <option value="privilege_escalation">Privilege Escalation</option>
-        <option value="phishing">Spear Phishing</option>
-        <option value="data_leak_email">Data Leak (Email)</option>
-        <option value="social_engineering">Social Engineering</option>
-        <option value="insider_chat">Insider Chat</option>
-        <option value="credential_sharing">Credential Sharing</option>
-        <option value="data_theft_call">Data Theft (Voice Call)</option>
+        <optgroup label="System Logs">
+          <option value="logs:brute_force">Brute Force Attack</option>
+          <option value="logs:data_exfiltration">Data Exfiltration</option>
+          <option value="logs:insider_threat">Insider Threat</option>
+          <option value="logs:privilege_escalation">Privilege Escalation</option>
+        </optgroup>
+        <optgroup label="Email Traffic">
+          <option value="emails:phishing">Spear Phishing</option>
+          <option value="emails:data_leak_email">Data Leak (Email)</option>
+          <option value="emails:social_engineering">Social Engineering</option>
+          <option value="emails:external_exfil">External Exfiltration</option>
+        </optgroup>
+        <optgroup label="Corporate Chat">
+          <option value="messages:insider_chat">Insider Chat</option>
+          <option value="messages:credential_sharing">Credential Sharing</option>
+          <option value="messages:competitor_contact">Competitor Contact</option>
+        </optgroup>
+        <optgroup label="Voice Transcripts">
+          <option value="calls:data_theft_call">Data Theft (Voice Call)</option>
+          <option value="calls:insider_recruitment">Insider Recruitment</option>
+          <option value="calls:bribery_call">Bribery Call</option>
+        </optgroup>
       </select>
-      <input id="scenActor" placeholder="Actor UID (optional)" style="width: 200px;">
+      <select id="scenActor" style="width: 240px;">
+        <option value="">Random employee</option>
+        <option value="emp-001">Alexei Petrov — Senior Developer</option>
+        <option value="emp-002">Maria Ivanova — Accountant</option>
+        <option value="emp-004">Elena Kuznetsova — HR Specialist</option>
+        <option value="emp-005">Sergei Volkov — Team Lead</option>
+        <option value="emp-012">Pavel Novikov — Junior Developer</option>
+        <option value="emp-013">Svetlana Popova — Sales Manager</option>
+        <option value="emp-014">Roman Karpov — Intern</option>
+        <option value="emp-015">Irina Belova — System Administrator</option>
+        <option value="emp-010">Igor Smirnov — CEO</option>
+      </select>
       <button class="btn btn-primary" onclick="triggerScenario()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
         Execute Scenario
@@ -652,7 +670,9 @@ async function doLogin() {
       document.getElementById('loginOverlay').style.display = 'none';
       initApp();
     } else {
-      document.getElementById('loginErr').textContent = 'Invalid credentials provided.';
+      document.getElementById('loginErr').textContent = r.status === 429
+        ? 'Too many failed attempts. Try again in a few minutes.'
+        : 'Invalid credentials provided.';
       document.getElementById('loginErr').style.display = 'block';
     }
   } catch(e) {
@@ -670,14 +690,28 @@ async function setMode(mode) {
     });
     const d = await r.json();
     if (d.ok) {
-      const isAuto = mode === 'autonomous';
-      document.getElementById('btnModeAuto').className = `btn-mode ${isAuto ? 'active' : ''}`;
-      document.getElementById('btnModeHuman').className = `btn-mode ${!isAuto ? 'active' : ''}`;
-      toast('Operation Mode: ' + (isAuto ? 'Autonomous Execution (Instant)' : 'Human-in-the-Loop (60s Verification)'));
+      renderMode(d.mode);
+      toast('Operation Mode: ' + (d.mode === 'autonomous'
+        ? 'Autonomous Execution (Instant)'
+        : `Human-in-the-Loop (${d.timeout}s window; ISOLATE-level actions need explicit approval)`));
     }
   } catch (e) {
     toast('Failed to change operational mode.');
   }
+}
+
+function renderMode(mode) {
+  const isAuto = mode === 'autonomous';
+  document.getElementById('btnModeAuto').className = `btn-mode ${isAuto ? 'active' : ''}`;
+  document.getElementById('btnModeHuman').className = `btn-mode ${!isAuto ? 'active' : ''}`;
+}
+
+async function loadMode() {
+  try {
+    const r = await apiFetch('/api/config/mode');
+    const d = await r.json();
+    if (d.mode) renderMode(d.mode);
+  } catch (e) {}
 }
 
 async function startDemo() {
@@ -713,7 +747,7 @@ async function loadIncidents() {
     document.getElementById('statTotal').textContent = incidents.length;
     document.getElementById('statCritical').textContent = incidents.filter(i => i.severity === 'CRITICAL').length;
     document.getElementById('statHigh').textContent = incidents.filter(i => i.severity === 'HIGH').length;
-    document.getElementById('statPending').textContent = incidents.filter(i => i.action_status === 'pending').length;
+    document.getElementById('statPending').textContent = incidents.filter(i => ['pending','awaiting_operator'].includes(i.action_status)).length;
     
     const el = document.getElementById('incidentList');
     if (!d.incidents.length) { 
@@ -726,11 +760,17 @@ async function loadIncidents() {
     
     el.innerHTML = d.incidents.map(i => {
       const isAutoExec = (i.action_status||'').includes('auto_executed_timeout');
-      const isPending = i.action_status==='pending' && ['FLAG','ISOLATE','BLOCK'].includes(i.action_proposed);
+      const isEnforcement = !['NOTIFY','READ'].includes(i.action_proposed);
+      const isAwaiting = i.action_status==='awaiting_operator';
+      const isPending = isAwaiting || (i.action_status==='pending' && isEnforcement);
       let statusBadge = '';
-      
+
       if (isAutoExec) {
         statusBadge = '<div class="auto-badge executed">⚡ AUTO-EXECUTED BY DIRECTIVE</div>';
+      } else if (isAwaiting) {
+        statusBadge = `<div class="auto-badge pending">🛑 APPROVAL REQUIRED: ${esc(i.action_proposed)}</div>`;
+      } else if (i.action_status==='executed_by_operator') {
+        statusBadge = '<div class="auto-badge auto">✔ EXECUTED BY OPERATOR</div>';
       } else if (isPending) {
         statusBadge = `<div class="auto-badge pending">⏳ AWAITING OPERATOR <span class="countdown" data-updated="${i.created_at}"></span></div>`;
       } else if (i.action_status==='auto_executed') {
@@ -753,7 +793,7 @@ async function loadIncidents() {
           </div>
           <div class="inc-meta-item">
             <span class="inc-meta-label">Risk Score</span>
-            <span class="inc-meta-value">${i.score} / 100</span>
+            <span class="inc-meta-value">${Math.round((i.score||0)*100)} / 100</span>
           </div>
           <div class="inc-meta-item">
             <span class="inc-meta-label">Detected</span>
@@ -864,17 +904,15 @@ async function loadGraph() {
 
 // ── Scenarios ────────────────────────────────────────────────────────
 async function triggerScenario() {
-  const body = { 
-    source: document.getElementById('scenSource').value,
-    scenario: document.getElementById('scenName').value,
-    actor_uid: document.getElementById('scenActor').value || null 
-  };
+  const [source, scenario] = document.getElementById('scenName').value.split(':');
+  const body = { source, scenario, actor_uid: document.getElementById('scenActor').value || null };
   const lg = document.getElementById('scenLog');
   lg.innerHTML += `<div style="color:#e2e8f0; margin-top:8px;">> [${new Date().toLocaleTimeString()}] Executing payload: <span style="color:#818cf8">${body.scenario}</span> on vector <span style="color:#818cf8">${body.source}</span>...</div>`;
   lg.scrollTop = lg.scrollHeight;
   try {
     const r = await apiFetch('/api/scenario', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
     lg.innerHTML += `<div style="color:var(--green); margin-top:4px;">> [${new Date().toLocaleTimeString()}] [SUCCESS] Injection confirmed. Pipeline processing initialized.</div>`;
   } catch(e) { 
     lg.innerHTML += `<div style="color:var(--red); margin-top:4px;">> [${new Date().toLocaleTimeString()}] [ERROR] ${e}</div>`; 
@@ -950,6 +988,7 @@ async function openForensicModal(incidentId) {
         if (t.status === 'DONE') { statusColor = 'var(--green)'; statusIcon = '✓'; }
         else if (t.status === 'IN_PROGRESS') { statusColor = 'var(--accent)'; statusIcon = '⏳'; }
         else if (t.status === 'BLOCKED') { statusColor = 'var(--crit)'; statusIcon = '⚠'; }
+        else if (t.status === 'NEEDS_REVIEW') { statusColor = 'var(--accent)'; statusIcon = '👁'; }
 
         return `
         <div style="display:flex; gap:12px; margin-bottom: 16px; align-items: flex-start;">
@@ -1038,11 +1077,54 @@ function connectWS() {
         loadIncidents();
         toastAuto(`⚡ TIMEOUT OVERRIDE: Autonomous action taken on ${d.incident_id}`);
       } else if(d.type==='new_incident'||d.type==='incident_update') {
-        loadIncidents(); 
+        loadIncidents();
         toast(`⚠️ ${d.type.replace('_',' ').toUpperCase()}: ${d.data?.title||d.incident_id||''}`);
+      } else if(d.type==='forensic_approval_required') {
+        showApprovalRequest(d);
+      } else if(d.type==='forensic_approval_resolved') {
+        document.getElementById('apr-'+d.request_id)?.remove();
+      } else if(d.type==='plan_completed') {
+        loadIncidents();
+        toast(`🔬 Forensic plan ${d.plan_id}: ${d.status} (${d.total_findings} findings)`);
       }
     } catch(er){}
   };
+}
+
+// ── Forensic approval requests (REQUIRES_APPROVAL MCP calls) ─────────
+function showApprovalRequest(d) {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast auto';
+  t.id = 'apr-' + d.request_id;
+  t.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">
+    <span><b>Forensic approval required</b> (auto-deny in ${esc(String(d.timeout_seconds))}s)</span>
+    <span style="font-family:monospace;font-size:12px">${esc(d.function)} ${esc(JSON.stringify(d.parameters))}</span>
+    <span style="font-size:12px;opacity:.8">${esc(d.reason)}</span>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-approve">Approve</button>
+      <button class="btn btn-reject">Deny</button>
+    </div>
+  </div>`;
+  t.querySelector('.btn-approve').onclick = () => decideApproval(d.request_id, 'approve');
+  t.querySelector('.btn-reject').onclick = () => decideApproval(d.request_id, 'deny');
+  c.appendChild(t);
+  setTimeout(() => t.remove(), (d.timeout_seconds || 60) * 1000);
+}
+
+async function decideApproval(requestId, decision) {
+  try {
+    const r = await apiFetch('/api/forensic/approvals/' + encodeURIComponent(requestId), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({decision})
+    });
+    if (!r.ok) throw new Error(r.status);
+    toast(`Forensic request ${decision === 'approve' ? 'approved' : 'denied'}`);
+  } catch (e) {
+    toast('Approval request already resolved or expired.');
+  }
+  document.getElementById('apr-' + requestId)?.remove();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1097,7 +1179,7 @@ async function checkStatus() {
   } catch(e){}
 }
 function initApp() {
-  loadIncidents(); checkStatus(); connectWS();
+  loadIncidents(); checkStatus(); loadMode(); connectWS();
   setInterval(loadIncidents, 15000);
   setInterval(checkStatus, 30000);
 }

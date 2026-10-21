@@ -89,6 +89,8 @@ async def run_forensics(ollama_url):
     os.environ["FORENSIC_EVIDENCE_BASE"] = EVIDENCE_PATH
     os.environ["PALADIN_MODE"] = "production"
     os.environ["OLLAMA_TIMEOUT"] = "600"
+    # The nromanoff case uses canned SIFT results (marked simulated in reports)
+    os.environ["FORENSIC_DEMO_FIXTURES"] = "true"
     
     # Import Paladin modules
     from paladin.config.settings import settings

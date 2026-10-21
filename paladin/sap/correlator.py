@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 
@@ -15,6 +15,27 @@ from paladin.config.settings import settings
 from paladin.graph.neo4j_client import Neo4jClient
 
 log = structlog.get_logger(__name__)
+
+
+def event_employee(topic: str, event: dict) -> str | None:
+    """
+    The employee an event is about.
+    Inbound mail from outside (phishing, social engineering) is about the
+    targeted recipient — the external sender is not a monitored employee.
+    """
+    if topic == "logs":
+        return event.get("employee_uid")
+    if topic == "emails":
+        sender = event.get("sender_uid")
+        if sender and sender != "__external__":
+            return sender
+        recipients = event.get("recipient_uids") or []
+        return recipients[0] if recipients else None
+    if topic == "messages":
+        return event.get("sender_uid")
+    if topic == "calls":
+        return event.get("caller_uid")
+    return None
 
 
 @dataclass
@@ -112,16 +133,7 @@ class Correlator:
         return result
 
     def _extract_employee(self, topic: str, event: dict) -> str | None:
-        """Extract employee UID from event depending on topic."""
-        if topic == "logs":
-            return event.get("employee_uid")
-        elif topic == "emails":
-            return event.get("sender_uid")
-        elif topic == "messages":
-            return event.get("sender_uid")
-        elif topic == "calls":
-            return event.get("caller_uid")
-        return None
+        return event_employee(topic, event)
 
     # ── Pattern 1: Clearance violation ────────────────────────────────────────
     async def _check_clearance_violation(
@@ -156,11 +168,14 @@ class Correlator:
         ts = event.get("timestamp", "")
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            hour = dt.hour
         except (ValueError, AttributeError):
             return None
+        # Timestamps are UTC; working hours are defined in office local time
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone(timedelta(hours=settings.sap_utc_offset_hours)))
+        hour = dt.hour
 
-        if 6 <= hour <= 22:
+        if settings.sap_work_hours_start <= hour <= settings.sap_work_hours_end:
             return None  # Within normal range
 
         risk = event.get("risk_score", 0)

@@ -5,11 +5,12 @@ Agent interacts ONLY with this API — never directly with shell.
 No destructive functions exist. Parameters validated. Output parsed & hashed.
 """
 from __future__ import annotations
-import hashlib, json, re, time
+import hashlib, inspect, json, re, time
 from datetime import datetime, timezone
 from typing import Optional
 import structlog
 
+from paladin.forensic import demo_fixtures
 from paladin.forensic.action_verifier import ForensicActionVerifier, VerifierCategory
 from paladin.forensic.sandbox_manager import SandboxManager
 from paladin.forensic.mcp_types import (
@@ -27,10 +28,11 @@ class SIFTMCPServer:
     """MCP Server exposing SIFT forensic tools as typed functions."""
 
     def __init__(self, sandbox: SandboxManager, verifier: ForensicActionVerifier,
-                 pg_store=None) -> None:
+                 pg_store=None, approval_broker=None) -> None:
         self._sandbox = sandbox
         self._verifier = verifier
         self._pg_store = pg_store
+        self._approvals = approval_broker
         self._registry: dict[str, callable] = {
             "get_file_metadata": self.get_file_metadata,
             "compute_hash": self.compute_hash,
@@ -61,8 +63,27 @@ class SIFTMCPServer:
             return MCPResponse(function=request.function, success=False,
                                error=f"BLOCKED: {verdict.reason}")
 
+        if verdict.category == VerifierCategory.REQUIRES_APPROVAL:
+            # Human-in-the-Loop: park the call; auto-DENY on timeout or without a channel
+            if self._approvals is None:
+                return MCPResponse(function=request.function, success=False,
+                                   error="DENIED: operator approval required but no approval channel is configured")
+            decision = await self._approvals.request(
+                request.function, request.parameters, verdict.reason,
+                request.incident_id, request.plan_id)
+            if not decision.approved:
+                return MCPResponse(function=request.function, success=False,
+                                   error=f"DENIED: {decision.reason}")
+            start = time.monotonic()  # don't count operator wait time as execution time
+
         try:
-            result = await handler(container_id, **request.parameters)
+            fixture = demo_fixtures.lookup(request.function, container_id, request.parameters)
+            if fixture is not None:
+                log.warning("forensic_demo_fixture_used", function=request.function,
+                            incident_id=request.incident_id)
+                result = fixture
+            else:
+                result = await handler(container_id, **request.parameters)
             duration_ms = int((time.monotonic() - start) * 1000)
             result_dict = result.model_dump() if hasattr(result, "model_dump") else result
             raw_hash = hashlib.sha256(
@@ -78,21 +99,41 @@ class SIFTMCPServer:
 
             return MCPResponse(function=request.function, success=True,
                                result=result_dict, execution_time_ms=duration_ms,
-                               raw_output_hash=raw_hash)
+                               raw_output_hash=raw_hash,
+                               simulated=fixture is not None)
         except Exception as e:
             duration_ms = int((time.monotonic() - start) * 1000)
             log.error("mcp_exec_error", function=request.function, error=str(e))
             return MCPResponse(function=request.function, success=False,
                                error=str(e), execution_time_ms=duration_ms)
 
+    async def _exec_checked(self, container_id: str, command: list[str],
+                            timeout: int | None = None) -> tuple[str, int]:
+        """
+        Run a tool in the sandbox and fail loudly on a non-zero exit code.
+        A crashed tool must surface as a BLOCKED step, never as an empty
+        result the LLM would read as "nothing suspicious found".
+        """
+        out, rc = await self._sandbox.exec_in_sandbox(container_id, command, timeout=timeout)
+        if rc != 0:
+            raise RuntimeError(f"{command[0]} failed (rc={rc}): {out.strip()[:300] or 'see sandbox stderr'}")
+        return out, rc
+
+    def get_function_params(self, function: str) -> set[str] | None:
+        """Keyword parameters accepted by an MCP function (None if unknown)."""
+        handler = self._registry.get(function)
+        if handler is None:
+            return None
+        return {name for name in inspect.signature(handler).parameters if name != "container_id"}
+
     # ── File Artifacts ────────────────────────────────────────────────────────
 
     async def get_file_metadata(self, container_id: str, path: str) -> FileMetadata:
-        out, rc = await self._sandbox.exec_in_sandbox(
+        out, rc = await self._exec_checked(
             container_id, ["stat", "--format", "%n|%s|%W|%Y|%X|%A", path])
         if rc != 0: raise RuntimeError(f"stat failed: {out}")
         parts = out.strip().split("|")
-        mime_out, _ = await self._sandbox.exec_in_sandbox(
+        mime_out, _ = await self._exec_checked(
             container_id, ["file", "--mime-type", "-b", path])
         return FileMetadata(
             name=parts[0].split("/")[-1], size=int(parts[1]),
@@ -104,9 +145,9 @@ class SIFTMCPServer:
                            algorithm: str = "sha256") -> HashResult:
         algo = HashAlgorithm(algorithm.lower())
         cmd = {"md5": "md5sum", "sha1": "sha1sum", "sha256": "sha256sum"}[algo.value]
-        out, rc = await self._sandbox.exec_in_sandbox(container_id, [cmd, path])
+        out, rc = await self._exec_checked(container_id, [cmd, path])
         if rc != 0: raise RuntimeError(f"Hash failed: {out}")
-        size_out, _ = await self._sandbox.exec_in_sandbox(
+        size_out, _ = await self._exec_checked(
             container_id, ["stat", "--format", "%s", path])
         return HashResult(path=path, algorithm=algorithm,
                           hash_value=out.strip().split()[0],
@@ -114,8 +155,8 @@ class SIFTMCPServer:
 
     async def extract_strings(self, container_id: str, path: str,
                               min_length: int = 4) -> StringsList:
-        out, _ = await self._sandbox.exec_in_sandbox(
-            container_id, ["strings", "-n", str(min_length), path], timeout=120)
+        out, _ = await self._exec_checked(
+            container_id, ["strings", "-n", str(int(min_length)), path], timeout=120)
         strings = out.strip().split("\n") if out.strip() else []
         suspicious = self._detect_ioc_patterns(strings)
         return StringsList(strings=strings[:500], total_count=len(strings),
@@ -125,27 +166,10 @@ class SIFTMCPServer:
 
     async def analyze_process_list(self, container_id: str,
                                    memory_image: str) -> ProcessList:
-        if "nromanoff" in str(memory_image).lower() or "nromanoff" in container_id.lower():
-            processes = [
-                ProcessInfo(pid=4, name="System", ppid=0, cmd="", create_time="2026-06-12T08:00:00Z"),
-                ProcessInfo(pid=268, name="smss.exe", ppid=4, cmd="\\SystemRoot\\System32\\smss.exe", create_time="2026-06-12T08:00:01Z"),
-                ProcessInfo(pid=368, name="csrss.exe", ppid=268, cmd="", create_time="2026-06-12T08:00:03Z"),
-                ProcessInfo(pid=416, name="wininit.exe", ppid=268, cmd="", create_time="2026-06-12T08:00:04Z"),
-                ProcessInfo(pid=464, name="services.exe", ppid=416, cmd="", create_time="2026-06-12T08:00:05Z"),
-                ProcessInfo(pid=476, name="lsass.exe", ppid=416, cmd="", create_time="2026-06-12T08:00:05Z"),
-                ProcessInfo(pid=856, name="svchost.exe", ppid=464, cmd="C:\\Windows\\system32\\svchost.exe -k DcomLaunch", create_time="2026-06-12T08:00:06Z"),
-                ProcessInfo(pid=936, name="svchost.exe", ppid=464, cmd="C:\\Windows\\system32\\svchost.exe -k rpcss", create_time="2026-06-12T08:00:06Z"),
-                ProcessInfo(pid=6404, name="svchost.exe", ppid=856, cmd="C:\\Windows\\system32\\svchost.exe -k netsvcs", create_time="2026-06-12T09:45:12Z")
-            ]
-            suspicious = [
-                ProcessInfo(pid=6404, name="svchost.exe", ppid=856, cmd="C:\\Windows\\system32\\svchost.exe -k netsvcs", create_time="2026-06-12T09:45:12Z")
-            ]
-            return ProcessList(processes=processes, suspicious_processes=suspicious, total_count=len(processes))
-
-        await self._sandbox.exec_in_sandbox(container_id,
+        await self._exec_checked(container_id,
             ["vol", "-f", memory_image, "windows.pslist.PsList",
              "--output", "json", "--output-file", "/cases/pslist.json"], timeout=300)
-        json_out, _ = await self._sandbox.exec_in_sandbox(
+        json_out, _ = await self._exec_checked(
             container_id, ["cat", "/cases/pslist.json"])
         processes, suspicious = [], []
         try:
@@ -163,21 +187,10 @@ class SIFTMCPServer:
 
     async def scan_network_connections(self, container_id: str,
                                        memory_image: str) -> ConnectionList:
-        if "nromanoff" in str(memory_image).lower() or "nromanoff" in container_id.lower():
-            connections = [
-                NetworkConnection(local_addr="10.3.58.5:135", remote_addr="0.0.0.0:0", state="LISTENING", pid=856, process_name="svchost.exe"),
-                NetworkConnection(local_addr="10.3.58.5:445", remote_addr="0.0.0.0:0", state="LISTENING", pid=4, process_name="System"),
-                NetworkConnection(local_addr="10.3.58.5:1044", remote_addr="185.141.63.10:80", state="ESTABLISHED", pid=6404, process_name="svchost.exe")
-            ]
-            external = [
-                NetworkConnection(local_addr="10.3.58.5:1044", remote_addr="185.141.63.10:80", state="ESTABLISHED", pid=6404, process_name="svchost.exe")
-            ]
-            return ConnectionList(connections=connections, external_connections=external, total_count=len(connections))
-
-        await self._sandbox.exec_in_sandbox(container_id,
+        await self._exec_checked(container_id,
             ["vol", "-f", memory_image, "windows.netscan.NetScan",
              "--output", "json", "--output-file", "/cases/netscan.json"], timeout=300)
-        json_out, _ = await self._sandbox.exec_in_sandbox(
+        json_out, _ = await self._exec_checked(
             container_id, ["cat", "/cases/netscan.json"])
         connections, external = [], []
         try:
@@ -198,20 +211,11 @@ class SIFTMCPServer:
 
     async def extract_loaded_modules(self, container_id: str,
                                      memory_image: str, pid: int) -> ModuleList:
-        if "nromanoff" in str(memory_image).lower() or "nromanoff" in container_id.lower():
-            if pid == 6404:
-                return ModuleList(modules=[
-                    ModuleInfo(name="svchost.exe", base_address="0x400000", size=49152, path="C:\\Windows\\System32\\svchost.exe"),
-                    ModuleInfo(name="ntdll.dll", base_address="0x77880000", size=1294336, path="C:\\Windows\\System32\\ntdll.dll"),
-                    ModuleInfo(name="kernel32.dll", base_address="0x75be0000", size=1114112, path="C:\\Windows\\System32\\kernel32.dll"),
-                    ModuleInfo(name="unknown_injected_module.dll", base_address="0xc30000", size=262144, path="<injected code / Zeus Trojan>")
-                ])
-
-        await self._sandbox.exec_in_sandbox(container_id,
+        await self._exec_checked(container_id,
             ["vol", "-f", memory_image, "windows.dlllist.DllList",
-             "--pid", str(pid), "--output", "json",
+             "--pid", str(int(pid)), "--output", "json",
              "--output-file", "/cases/dlllist.json"], timeout=300)
-        json_out, _ = await self._sandbox.exec_in_sandbox(
+        json_out, _ = await self._exec_checked(
             container_id, ["cat", "/cases/dlllist.json"])
         modules = []
         try:
@@ -227,18 +231,10 @@ class SIFTMCPServer:
 
     async def parse_mft(self, container_id: str, image_path: str,
                         output_format: str = "timeline") -> MFTResult:
-        if "nromanoff" in str(image_path).lower() or "nromanoff" in container_id.lower():
-            timeline = [
-                MFTEntry(timestamp="2026-06-12T09:40:15", action="CREATED", path="C:\\Windows\\System32\\sdra64.exe", size=45056),
-                MFTEntry(timestamp="2026-06-12T09:42:00", action="CREATED", path="C:\\Users\\nromanoff\\Downloads\\spinlock.exe", size=120220),
-                MFTEntry(timestamp="2026-06-12T09:45:00", action="MODIFIED", path="C:\\Windows\\System32\\drivers\\etc\\hosts", size=824)
-            ]
-            return MFTResult(entry_count=3, timeline=timeline, anomalies=[])
-
-        await self._sandbox.exec_in_sandbox(container_id,
+        await self._exec_checked(container_id,
             ["analyzemft", "-f", image_path, "-o", "/cases/mft.csv", "--csv"],
             timeout=600)
-        csv_out, _ = await self._sandbox.exec_in_sandbox(
+        csv_out, _ = await self._exec_checked(
             container_id, ["cat", "/cases/mft.csv"])
         timeline, anomalies = [], []
         for line in csv_out.strip().split("\n")[1:]:
@@ -252,15 +248,7 @@ class SIFTMCPServer:
                          anomalies=anomalies)
 
     async def parse_prefetch(self, container_id: str, image_path: str) -> PrefetchResult:
-        if "nromanoff" in str(image_path).lower() or "nromanoff" in container_id.lower():
-            execs = [
-                PrefetchEntry(name="SPINLOCK.EXE", run_count=2, last_run="2026-06-12T09:42:15"),
-                PrefetchEntry(name="SDRA64.EXE", run_count=12, last_run="2026-06-12T09:45:00"),
-                PrefetchEntry(name="CMD.EXE", run_count=4, last_run="2026-06-12T09:47:00")
-            ]
-            return PrefetchResult(executables=execs, suspicious_executables=[])
-
-        out, _ = await self._sandbox.exec_in_sandbox(container_id,
+        out, _ = await self._exec_checked(container_id,
             ["prefetch_parser", "--json", image_path], timeout=120)
         execs, suspicious = [], []
         for line in out.strip().split("\n"):
@@ -275,14 +263,7 @@ class SIFTMCPServer:
 
     async def extract_registry_hive(self, container_id: str, image_path: str,
                                     hive: str = "SYSTEM") -> RegistryResult:
-        if "nromanoff" in str(image_path).lower() or "nromanoff" in container_id.lower():
-            keys = [
-                RegistryEntry(key_path="HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", value_name="Userinit", value_data="C:\\Windows\\system32\\userinit.exe,C:\\Windows\\System32\\sdra64.exe"),
-                RegistryEntry(key_path="HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", value_name="ZeusTrojan", value_data="C:\\Windows\\System32\\sdra64.exe")
-            ]
-            return RegistryResult(keys=keys, autorun_entries=keys)
-
-        out, _ = await self._sandbox.exec_in_sandbox(container_id,
+        out, _ = await self._exec_checked(container_id,
             ["regripper", "-r", image_path, "-f", hive.lower()], timeout=180)
         keys, autorun = [], []
         current_key = ""
@@ -300,10 +281,10 @@ class SIFTMCPServer:
         return RegistryResult(keys=keys[:500], autorun_entries=autorun)
 
     async def parse_pcap(self, container_id: str, pcap_path: str) -> PCAPResult:
-        dns_out, _ = await self._sandbox.exec_in_sandbox(container_id,
+        dns_out, _ = await self._exec_checked(container_id,
             ["tshark", "-r", pcap_path, "-Y", "dns.flags.response==0",
              "-T", "fields", "-e", "dns.qry.name"], timeout=120)
-        http_out, _ = await self._sandbox.exec_in_sandbox(container_id,
+        http_out, _ = await self._exec_checked(container_id,
             ["tshark", "-r", pcap_path, "-Y", "http.request", "-T", "fields",
              "-e", "http.request.method", "-e", "http.host",
              "-e", "http.request.uri"], timeout=120)
@@ -317,23 +298,10 @@ class SIFTMCPServer:
 
     async def extract_browser_artifacts(self, container_id: str,
                                         image_path: str, browser: str = "chrome") -> BrowserResult:
-        if "nromanoff" in str(image_path).lower() or "nromanoff" in container_id.lower():
-            return BrowserResult(
-                history=[
-                    {"url": "http://185.141.63.10/blog/index.php", "title": "Corporate Blog", "visit_time": "2026-06-12T09:35:00"},
-                    {"url": "http://185.141.63.10/payloads/spinlock.exe", "title": "Download Spinlock", "visit_time": "2026-06-12T09:41:00"}
-                ],
-                downloads=[
-                    {"url": "http://185.141.63.10/payloads/spinlock.exe", "path": "C:\\Users\\nromanoff\\Downloads\\spinlock.exe", "received_bytes": 120220, "total_bytes": 120220, "state": "COMPLETE"}
-                ],
-                cookies_domains=["185.141.63.10"],
-                saved_credentials_count=1
-            )
-
-        await self._sandbox.exec_in_sandbox(container_id,
+        await self._exec_checked(container_id,
             ["python3", "-m", "hindsight", "-i", image_path,
              "-o", "/cases/browser", "-f", "json"], timeout=180)
-        json_out, _ = await self._sandbox.exec_in_sandbox(
+        json_out, _ = await self._exec_checked(
             container_id, ["cat", "/cases/browser.json"])
         try:
             d = json.loads(json_out)
@@ -361,9 +329,16 @@ class SIFTMCPServer:
 
     @staticmethod
     def _is_local(ip: str) -> bool:
-        return (not ip or ip in ("0.0.0.0", "::", "*", "::1") or
-                ip.startswith("127.") or ip.startswith("10.") or
-                ip.startswith("192.168.") or ip.startswith("172.16."))
+        if not ip or ip in ("0.0.0.0", "::", "*", "::1"):
+            return True
+        if ip.startswith("127.") or ip.startswith("10.") or ip.startswith("192.168."):
+            return True
+        if ip.startswith("172."):
+            try:
+                return 16 <= int(ip.split(".")[1]) <= 31
+            except (IndexError, ValueError):
+                pass
+        return False
 
     @staticmethod
     def _detect_ioc_patterns(strings: list[str]) -> list[SuspiciousPattern]:
